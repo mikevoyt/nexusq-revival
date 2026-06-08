@@ -1,0 +1,268 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+
+#include "omap4460.dtsi"
+#include "elpida_ecb240abacn.dtsi"
+
+/ {
+	model = "Google Nexus Q / Steelhead";
+	compatible = "google,steelhead", "ti,omap4460", "ti,omap4430", "ti,omap4";
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x40000000>;
+	};
+
+	chosen {
+		bootargs = "console=ttyO2,115200n8 earlyprintk ignore_loglevel root=/dev/ram0 rdinit=/init init=/init";
+		stdout-path = &uart3;
+	};
+
+	tas5713_iface: regulator-tas5713-interface {
+		compatible = "regulator-fixed";
+		regulator-name = "tas5713-interface";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio2 8 GPIO_ACTIVE_HIGH>;		/* gpio_40 */
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+		startup-delay-us = <10000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&tas5713_gpio_pins>;
+	};
+
+	wlan_vmmc: regulator-wlan-vmmc {
+		compatible = "regulator-fixed";
+		regulator-name = "wlan-vmmc";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		gpio = <&gpio2 11 GPIO_ACTIVE_HIGH>;		/* gpio_43 */
+		enable-active-high;
+		regulator-boot-on;
+		startup-delay-us = <500000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wlan_gpio_pins>;
+	};
+
+	sound_tas5713: sound-tas5713 {
+		compatible = "google,steelhead-tas5713";
+		ti,model = "Steelhead TAS5713";
+		google,mcbsp = <&mcbsp2>;
+		google,audio-codec = <&tas5713>;
+		clocks = <&auxclk1_ck>,
+			 <&abe_clkctrl OMAP4_MCBSP2_CLKCTRL 26>,
+			 <&abe_24m_fclk>;
+		clock-names = "codec-mclk", "mcbsp-sync", "mcbsp-parent";
+	};
+};
+
+&omap4_pmx_core {
+	i2c1_pins: i2c1-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x122, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c1_scl */
+			OMAP4_IOPAD(0x124, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c1_sda */
+		>;
+	};
+
+	i2c4_pins: i2c4-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x12e, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c4_scl */
+			OMAP4_IOPAD(0x130, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c4_sda */
+		>;
+	};
+
+	mcbsp2_pins: mcbsp2-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x0f6, PIN_OUTPUT | MUX_MODE0)		/* abe_mcbsp2_clkx */
+			OMAP4_IOPAD(0x0f8, PIN_INPUT_PULLDOWN | MUX_MODE0)	/* abe_mcbsp2_dr */
+			OMAP4_IOPAD(0x0fa, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* abe_mcbsp2_dx */
+			OMAP4_IOPAD(0x0fc, PIN_OUTPUT | MUX_MODE0)		/* abe_mcbsp2_fsx */
+		>;
+	};
+
+	tas5713_gpio_pins: tas5713-gpio-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x060, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a16.gpio_40 */
+			OMAP4_IOPAD(0x064, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a18.gpio_42 */
+			OMAP4_IOPAD(0x068, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a20.gpio_44 */
+		>;
+	};
+
+	tas5713_mclk_pins: tas5713-mclk-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x19a, PIN_OUTPUT | MUX_MODE0)		/* fref_clk1_out */
+		>;
+	};
+
+	wlan_gpio_pins: wlan-gpio-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x066, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a19.gpio_43 */
+			OMAP4_IOPAD(0x07a, PIN_INPUT | MUX_MODE3)		/* gpmc_ncs3.gpio_53 */
+		>;
+	};
+
+	mmc5_pins: mmc5-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x148, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_clk */
+			OMAP4_IOPAD(0x14a, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_cmd */
+			OMAP4_IOPAD(0x14c, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_dat0 */
+			OMAP4_IOPAD(0x14e, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_dat1 */
+			OMAP4_IOPAD(0x150, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_dat2 */
+			OMAP4_IOPAD(0x152, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_dat3 */
+		>;
+	};
+};
+
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins>;
+	clock-frequency = <400000>;
+
+	twl: twl@48 {
+		reg = <0x48>;
+		interrupts = <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>;
+	};
+};
+
+#include "twl6030.dtsi"
+#include "twl6030_omap4.dtsi"
+
+&dpll_per_m3x2_ck {
+	assigned-clocks = <&dpll_per_m3x2_ck>;
+	assigned-clock-rates = <61440000>;
+};
+
+&auxclk1_src_ck {
+	assigned-clocks = <&auxclk1_src_ck>;
+	assigned-clock-parents = <&dpll_per_m3x2_ck>;
+};
+
+&auxclk1_ck {
+	assigned-clocks = <&auxclk1_ck>;
+	assigned-clock-rates = <12288000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&tas5713_mclk_pins>;
+};
+
+&vaux1 {
+	regulator-min-microvolt = <3000000>;
+	regulator-max-microvolt = <3000000>;
+	regulator-always-on;
+};
+
+&vmmc {
+	regulator-min-microvolt = <3000000>;
+	regulator-max-microvolt = <3000000>;
+};
+
+&vcxio {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+	regulator-always-on;
+};
+
+&vana {
+	regulator-min-microvolt = <2100000>;
+	regulator-max-microvolt = <2100000>;
+	regulator-always-on;
+};
+
+&vusb {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+};
+
+&twl_usb_comparator {
+	usb-supply = <&vusb>;
+};
+
+&mmc1 {
+	vmmc-supply = <&vmmc>;
+	bus-width = <8>;
+	non-removable;
+	no-1-8-v;
+	status = "okay";
+};
+
+&mmc2 {
+	status = "disabled";
+};
+
+&mmc3 {
+	status = "disabled";
+};
+
+&mmc4 {
+	status = "disabled";
+};
+
+&mmc5 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc5_pins>;
+	vmmc-supply = <&wlan_vmmc>;
+	bus-width = <4>;
+	non-removable;
+	cap-power-off-card;
+	keep-power-in-suspend;
+	status = "okay";
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	wifi@1 {
+		compatible = "brcm,bcm4330-fmac", "brcm,bcm4329-fmac";
+		reg = <1>;
+		interrupts-extended = <&gpio2 21 IRQ_TYPE_LEVEL_HIGH>;	/* gpio_53 */
+		interrupt-names = "host-wake";
+		brcm,board-type = "google,steelhead";
+		brcm,drive-strength = <12>;
+	};
+};
+
+&i2c4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4_pins>;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	tas5713: audio-codec@1b {
+		compatible = "ti,tas5711";
+		reg = <0x1b>;
+		#sound-dai-cells = <0>;
+
+		reset-gpios = <&gpio2 10 GPIO_ACTIVE_LOW>;	/* gpio_42 */
+		pdn-gpios = <&gpio2 12 GPIO_ACTIVE_LOW>;		/* gpio_44 */
+		clocks = <&auxclk1_ck>;
+		clock-names = "mclk";
+
+		AVDD-supply = <&tas5713_iface>;
+		DVDD-supply = <&tas5713_iface>;
+		PVDD_A-supply = <&tas5713_iface>;
+		PVDD_B-supply = <&tas5713_iface>;
+		PVDD_C-supply = <&tas5713_iface>;
+		PVDD_D-supply = <&tas5713_iface>;
+	};
+};
+
+&mcbsp2 {
+	#sound-dai-cells = <0>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&mcbsp2_pins>;
+	assigned-clocks = <&abe_clkctrl OMAP4_MCBSP2_CLKCTRL 26>;
+	assigned-clock-parents = <&abe_24m_fclk>;
+	status = "okay";
+};
+
+&uart3 {
+	interrupts-extended = <&wakeupgen GIC_SPI 74 IRQ_TYPE_LEVEL_HIGH
+			       &omap4_pmx_core OMAP4_UART3_RX>;
+	status = "okay";
+};
+
+&usb_otg_hs {
+	interface-type = <1>;
+	mode = <2>;
+	power = <500>;
+	status = "okay";
+};

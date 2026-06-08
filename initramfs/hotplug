@@ -1,0 +1,20 @@
+#!/bin/busybox sh
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+if [ -n "$FIRMWARE" ] && [ -n "$DEVPATH" ]; then
+	SYS="/sys$DEVPATH"
+	FW="/lib/firmware/$FIRMWARE"
+	if [ -e "$SYS/loading" ]; then
+		if [ -r "$FW" ]; then
+			echo 1 >"$SYS/loading"
+			cat "$FW" >"$SYS/data"
+			echo 0 >"$SYS/loading"
+		else
+			echo -1 >"$SYS/loading"
+		fi
+	fi
+fi
+
+exec /sbin/mdev "$@"

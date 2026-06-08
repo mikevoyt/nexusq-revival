@@ -1,0 +1,14 @@
+diff --git a/include/linux/compiler-gcc9.h b/include/linux/compiler-gcc9.h
+new file mode 100644
+index 000000000000..6118f7f25c7a
+--- /dev/null
++++ b/include/linux/compiler-gcc9.h
+@@ -0,0 +1,7 @@
++#ifndef __LINUX_COMPILER_H
++#error "Please don't include <linux/compiler-gcc9.h> directly, include <linux/compiler.h> instead."
++#endif
++
++/* The Steelhead 3.0 kernel predates GCC 9; reuse the newest GCC
++ * compatibility definitions available in this tree.
++ */
++#include <linux/compiler-gcc4.h>

@@ -1,0 +1,23 @@
+#!/bin/sh
+
+sync
+
+fallback="${NQ_REBOOT_FALLBACK:-15}"
+case "$fallback" in
+	""|*[!0-9]*) fallback=15 ;;
+esac
+
+(
+	sleep "$fallback"
+	echo "reboot-bootloader fallback stage 1 after ${fallback}s" >/dev/console 2>/dev/null || true
+	sync
+	/bin/reboot-bootloader bootloader >/dev/console 2>&1 &
+	sleep 8
+	echo "reboot-bootloader fallback stage 2: forced reboot" >/dev/console 2>/dev/null || true
+	reboot -f >/dev/console 2>&1 &
+	sleep 8
+	echo "reboot-bootloader fallback stage 3: sysrq reboot" >/dev/console 2>/dev/null || true
+	echo b >/proc/sysrq-trigger 2>/dev/null || true
+) &
+
+exec /bin/reboot-bootloader bootloader

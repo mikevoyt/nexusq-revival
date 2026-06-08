@@ -1,0 +1,16 @@
+#!/bin/sh
+
+if [ -e /run/nq-autoreboot.cancel ]; then
+	echo "autoreboot cancelled"
+	exit 0
+fi
+
+if [ -r /run/nq-autoreboot.pid ]; then
+	pid="$(cat /run/nq-autoreboot.pid)"
+	if kill -0 "$pid" 2>/dev/null; then
+		echo "autoreboot armed pid=$pid"
+		exit 0
+	fi
+fi
+
+echo "autoreboot not armed"

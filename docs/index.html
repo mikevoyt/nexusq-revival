@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexus Q Revival</title>
+  <meta name="description" content="Modern Debian and Linux 6.6 bring-up for the Google Nexus Q.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <img src="assets/nexusq-hero.png" alt="Generated black spherical media device on an embedded development workbench">
+    <div class="hero__shade"></div>
+    <nav class="nav" aria-label="Project">
+      <a href="https://github.com/mikevoyt/nexusq-revival">GitHub</a>
+      <a href="https://github.com/mikevoyt/nexusq-revival/releases">Releases</a>
+      <a href="https://github.com/mikevoyt/nexusq-revival/blob/main/BUILDING.md">Build</a>
+    </nav>
+    <div class="hero__content">
+      <p class="eyebrow">Google Nexus Q / Steelhead</p>
+      <h1>Nexus Q Revival</h1>
+      <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, and TAS5713 audio.</p>
+      <div class="hero__actions">
+        <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases">Download v0.1.0</a>
+        <a class="button" href="https://github.com/mikevoyt/nexusq-revival/blob/main/FLASHING.md">Flash Guide</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="band intro">
+      <div class="wrap two-col">
+        <div>
+          <p class="section-kicker">Why</p>
+          <h2>A strange device deserves a second boot.</h2>
+        </div>
+        <div class="prose">
+          <p>Google introduced Nexus Q at I/O 2012 as a $299 Android-controlled social streaming device for the living room. The consumer launch was postponed soon after, leaving a small population of preview units and a lot of unused hardware.</p>
+          <p>This project turns that hardware into a modern embedded Linux audio target, with a path toward a custom Android control app and network music streaming.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band">
+      <div class="wrap">
+        <p class="section-kicker">Current State</p>
+        <h2>Validated on hardware</h2>
+        <div class="status-grid">
+          <article class="status-card">
+            <span>Kernel</span>
+            <strong>Linux 6.6.142</strong>
+            <p>No-SMP OMAP4 boot path via fastboot.</p>
+          </article>
+          <article class="status-card">
+            <span>Distro</span>
+            <strong>Debian 13.5</strong>
+            <p>armhf rootfs on sparse ext4 userdata.</p>
+          </article>
+          <article class="status-card">
+            <span>Network</span>
+            <strong>Wi-Fi + SSH</strong>
+            <p>BCM4330 loads from rootfs firmware and owner calibration.</p>
+          </article>
+          <article class="status-card">
+            <span>Audio</span>
+            <strong>TAS5713 ALSA</strong>
+            <p>48 kHz stereo PCM opens on hw:0,0.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band split">
+      <div class="wrap two-col">
+        <div>
+          <p class="section-kicker">What Changed</p>
+          <h2>From artifact to bring-up platform.</h2>
+        </div>
+        <ul class="check-list">
+          <li>Ported a Steelhead device tree for OMAP4, TAS5713, McBSP2, USB gadget, and BCM4330 SDIO.</li>
+          <li>Added a Linux 6.6 ASoC machine driver for the internal speaker amplifier path.</li>
+          <li>Built a Debian loader and minimal rootfs init with USB serial, auto-fastboot recovery, Wi-Fi startup, and Dropbear.</li>
+          <li>Moved public Wi-Fi from embedded private blobs to modular `brcmfmac` plus first-boot calibration extraction.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="band release">
+      <div class="wrap two-col">
+        <div>
+          <p class="section-kicker">Release</p>
+          <h2>v0.1.0</h2>
+          <p class="prose">The first release is intentionally conservative: flash Debian to `userdata`, boot the kernel from RAM, validate, and return to fastboot.</p>
+        </div>
+        <div class="commands" aria-label="Fastboot commands">
+          <code>fastboot flash userdata nexusq-debian-trixie-armhf-rootfs.sparse.img</code>
+          <code>fastboot boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img</code>
+        </div>
+      </div>
+    </section>
+
+    <section class="band links">
+      <div class="wrap link-row">
+        <a href="https://blog.google/products/android/android-io-playground-is-open/">Google I/O 2012 launch post</a>
+        <a href="https://www.engadget.com/2012-07-31-google-postponing-nexus-q-launch-to-make-it-better.html">Launch postponement coverage</a>
+        <a href="https://github.com/mikevoyt/nexusq-revival">Source repository</a>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

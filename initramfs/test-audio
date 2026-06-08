@@ -1,0 +1,7 @@
+#!/bin/sh
+
+CARD="${1:-0}"
+DEVICE="${2:-0}"
+WAV="${3:-/tmp/test-tone-1khz-48k-stereo.wav}"
+
+exec /bin/tinyplay "$WAV" -c "$CARD" -d "$DEVICE"

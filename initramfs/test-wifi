@@ -1,0 +1,195 @@
+#!/bin/sh
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+LD_LIBRARY_PATH=/lib/arm-linux-gnueabihf:/usr/lib/arm-linux-gnueabihf
+export PATH LD_LIBRARY_PATH
+
+LOG=/run/wifi-test.log
+SUPP_LOG=/run/wpa_supplicant.log
+LOCK=/run/wifi-test.lock
+supp_pid=
+dropbear_pid=
+
+mkdir -p /run /run/wpa_supplicant /tmp /var/run /etc /root/.ssh /etc/dropbear
+
+if ! mkdir "$LOCK" 2>/dev/null; then
+	echo "[wifi-test] another test is already running" >/dev/console
+	exit 4
+fi
+cleanup() {
+	if [ -n "$supp_pid" ]; then
+		kill "$supp_pid" 2>/dev/null || true
+	fi
+	if [ -n "$dropbear_pid" ]; then
+		kill "$dropbear_pid" 2>/dev/null || true
+	fi
+	rmdir "$LOCK" 2>/dev/null || true
+}
+
+trap cleanup EXIT
+: >"$LOG"
+
+log() {
+	echo "[wifi-test] $*" | tee -a "$LOG" >/dev/console
+	echo "[wifi-test] $*" >/dev/kmsg 2>/dev/null || true
+}
+
+run() {
+	log "+ $*"
+	"$@" >>"$LOG" 2>&1
+	rc=$?
+	log "rc=$rc"
+	return "$rc"
+}
+
+dump_wifi_state() {
+	{
+		echo "--- uname ---"
+		uname -a
+		echo "--- cmdline ---"
+		cat /proc/cmdline 2>/dev/null || true
+		echo "--- nets ---"
+		ls -l /sys/class/net 2>/dev/null || true
+		echo "--- sdio ---"
+		ls -l /sys/bus/sdio/devices 2>/dev/null || true
+		echo "--- wlan0 ifconfig ---"
+		ifconfig wlan0 2>/dev/null || true
+		echo "--- brcm/cfg80211 dmesg ---"
+		dmesg 2>/dev/null | grep -Ei 'brcm|bcm|cfg80211|mmc4|mmc5|wlan|firmware|sdio' | tail -n 120 || true
+	} >>"$LOG"
+}
+
+dump_supplicant_state() {
+	{
+		echo "--- wpa_supplicant timeout diagnostics ---"
+		echo "pid=$supp_pid"
+		echo "--- ps ---"
+		ps 2>/dev/null || true
+		echo "--- ctrl dir ---"
+		ls -la /run/wpa_supplicant 2>/dev/null || true
+		for f in status wchan stack syscall; do
+			echo "--- /proc/$supp_pid/$f ---"
+			cat "/proc/$supp_pid/$f" 2>/dev/null || true
+		done
+		echo "--- brcm/cfg80211 dmesg tail ---"
+		dmesg 2>/dev/null | grep -Ei 'brcm|bcm|cfg80211|wlan|firmware|sdio|nl80211|rfkill' | tail -n 160 || true
+	} >>"$LOG"
+}
+
+wait_for_wlan0() {
+	for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+		mdev -s 2>/dev/null || true
+		[ -e /sys/class/net/wlan0 ] && return 0
+		sleep 1
+	done
+	return 1
+}
+
+leave_services_running() {
+	supp_pid=
+	dropbear_pid=
+	rmdir "$LOCK" 2>/dev/null || true
+	trap - EXIT
+}
+
+start_ssh() {
+	if ! command -v dropbear >/dev/null 2>&1; then
+		log "dropbear not present; ssh skipped"
+		return 0
+	fi
+	if [ ! -s /tmp/authorized_keys ]; then
+		log "no runtime /tmp/authorized_keys present; ssh skipped"
+		return 0
+	fi
+
+	mkdir -p /root/.ssh /etc/dropbear
+	cp /tmp/authorized_keys /root/.ssh/authorized_keys
+	chmod 700 /root/.ssh
+	chmod 600 /root/.ssh/authorized_keys
+
+	if [ ! -s /etc/dropbear/dropbear_ed25519_host_key ] && command -v dropbearkey >/dev/null 2>&1; then
+		run dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key || true
+	fi
+
+	log "starting dropbear"
+	dropbear -E -F -s -p 22 >>"$LOG" 2>&1 &
+	dropbear_pid=$!
+	sleep 1
+	if kill -0 "$dropbear_pid" 2>/dev/null; then
+		log "dropbear pid=$dropbear_pid"
+	else
+		log "dropbear failed to stay running"
+		dropbear_pid=
+	fi
+}
+
+log "starting"
+wait_for_wlan0 || {
+	log "wlan0 did not appear"
+	dump_wifi_state
+	exit 1
+}
+
+run ifconfig wlan0 up || true
+sleep 2
+dump_wifi_state
+
+if [ ! -s /tmp/wpa_supplicant.conf ]; then
+	log "no runtime /tmp/wpa_supplicant.conf present; diagnostics only"
+	exit 2
+fi
+
+chmod 600 /tmp/wpa_supplicant.conf 2>/dev/null || true
+killall wpa_supplicant 2>/dev/null || true
+rm -f "$SUPP_LOG"
+
+log "starting wpa_supplicant"
+wpa_supplicant -i wlan0 -D nl80211 -c /tmp/wpa_supplicant.conf \
+	-O /run/wpa_supplicant -f "$SUPP_LOG" -t -d >>"$LOG" 2>&1 &
+supp_pid=$!
+n=0
+while [ "$n" -lt 45 ]; do
+	n=$((n + 1))
+	if ! kill -0 "$supp_pid" 2>/dev/null; then
+		wait "$supp_pid"
+		rc=$?
+		log "wpa_supplicant exited during startup rc=$rc"
+		[ -r "$SUPP_LOG" ] && tail -n 120 "$SUPP_LOG" >>"$LOG"
+		exit "$rc"
+	fi
+	if wpa_cli -i wlan0 -p /run/wpa_supplicant ping >>"$LOG" 2>&1; then
+		log "wpa_supplicant control interface ready"
+		break
+	fi
+	sleep 1
+done
+if ! wpa_cli -i wlan0 -p /run/wpa_supplicant ping >>"$LOG" 2>&1; then
+	log "wpa_supplicant launch timeout"
+	dump_supplicant_state
+	[ -r "$SUPP_LOG" ] && tail -n 120 "$SUPP_LOG" >>"$LOG"
+	exit 124
+fi
+
+for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
+	21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
+	status="$(wpa_cli -i wlan0 -p /run/wpa_supplicant status 2>&1 || true)"
+	echo "--- wpa_cli status poll $n ---" >>"$LOG"
+	echo "$status" >>"$LOG"
+	case "$status" in
+		*wpa_state=COMPLETED*)
+			log "association completed"
+			if command -v udhcpc >/dev/null 2>&1; then
+				run udhcpc -i wlan0 -s /bin/udhcpc-script -n -q -t 5 -T 3 || true
+			fi
+			run ifconfig wlan0 || true
+			start_ssh
+			leave_services_running
+			exit 0
+			;;
+	esac
+	sleep 2
+done
+
+log "association did not complete"
+[ -r "$SUPP_LOG" ] && tail -n 120 "$SUPP_LOG" >>"$LOG"
+exit 3

@@ -1,0 +1,17 @@
+#!/bin/sh
+
+if [ -r /run/nq-watchdog.pid ]; then
+	pid="$(cat /run/nq-watchdog.pid)"
+	if kill -0 "$pid" 2>/dev/null; then
+		echo "watchdog feeder running pid=$pid"
+	else
+		echo "watchdog feeder pid file exists but process is not running"
+	fi
+else
+	echo "watchdog feeder not running"
+fi
+
+for f in /sys/class/watchdog/watchdog*/state /sys/class/watchdog/watchdog*/timeout; do
+	[ -r "$f" ] || continue
+	echo "$f=$(cat "$f")"
+done

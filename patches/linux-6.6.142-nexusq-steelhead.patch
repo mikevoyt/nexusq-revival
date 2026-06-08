@@ -1,0 +1,377 @@
+diff -urN a/drivers/clk/ti/composite.c b/drivers/clk/ti/composite.c
+--- a/drivers/clk/ti/composite.c	2026-06-01 08:43:16
++++ b/drivers/clk/ti/composite.c	2026-06-08 08:38:57
+@@ -29,13 +29,13 @@
+ static long ti_composite_round_rate(struct clk_hw *hw, unsigned long rate,
+ 				    unsigned long *prate)
+ {
+-	return -EINVAL;
++	return ti_clk_divider_ops.round_rate(hw, rate, prate);
+ }
+ 
+ static int ti_composite_set_rate(struct clk_hw *hw, unsigned long rate,
+ 				 unsigned long parent_rate)
+ {
+-	return -EINVAL;
++	return ti_clk_divider_ops.set_rate(hw, rate, parent_rate);
+ }
+ 
+ static const struct clk_ops ti_composite_divider_ops = {
+diff -urN a/sound/soc/ti/Kconfig b/sound/soc/ti/Kconfig
+--- a/sound/soc/ti/Kconfig	2026-06-01 08:43:16
++++ b/sound/soc/ti/Kconfig	2026-06-08 08:38:57
+@@ -123,6 +123,16 @@
+ 	  - PandaBoardES (4460)
+ 	  - OMAP5 uEVM
+ 
++config SND_SOC_STEELHEAD_TAS5713
++	tristate "SoC Audio support for Google Nexus Q / Steelhead TAS5713"
++	depends on ARCH_OMAP4 || COMPILE_TEST
++	depends on I2C && COMMON_CLK
++	select SND_SOC_OMAP_MCBSP
++	select SND_SOC_TAS571X
++	help
++	  Say Y if you want speaker audio support for the Google Nexus Q
++	  using the TAS5713-compatible TAS571x codec path on McBSP2.
++
+ config SND_SOC_OMAP_AMS_DELTA
+ 	tristate "SoC Audio support for Amstrad E3 (Delta) videophone"
+ 	depends on MACH_AMS_DELTA && TTY
+@@ -191,4 +201,3 @@
+ 	  Say Y if you want to add support for SoC audio on j721e Common
+ 	  Processor Board and Infotainment expansion board.
+ endmenu
+-
+diff -urN a/sound/soc/ti/Makefile b/sound/soc/ti/Makefile
+--- a/sound/soc/ti/Makefile	2026-06-01 08:43:16
++++ b/sound/soc/ti/Makefile	2026-06-08 08:38:57
+@@ -29,6 +29,7 @@
+ snd-soc-omap3pandora-objs := omap3pandora.o
+ snd-soc-omap-twl4030-objs := omap-twl4030.o
+ snd-soc-omap-abe-twl6040-objs := omap-abe-twl6040.o
++snd-soc-steelhead-tas5713-objs := steelhead-tas5713.o
+ snd-soc-ams-delta-objs := ams-delta.o
+ snd-soc-omap-hdmi-objs := omap-hdmi.o
+ snd-soc-osk5912-objs := osk5912.o
+@@ -40,6 +41,7 @@
+ obj-$(CONFIG_SND_SOC_OMAP3_PANDORA) += snd-soc-omap3pandora.o
+ obj-$(CONFIG_SND_SOC_OMAP3_TWL4030) += snd-soc-omap-twl4030.o
+ obj-$(CONFIG_SND_SOC_OMAP_ABE_TWL6040) += snd-soc-omap-abe-twl6040.o
++obj-$(CONFIG_SND_SOC_STEELHEAD_TAS5713) += snd-soc-steelhead-tas5713.o
+ obj-$(CONFIG_SND_SOC_OMAP_AMS_DELTA) += snd-soc-ams-delta.o
+ obj-$(CONFIG_SND_SOC_OMAP_HDMI) += snd-soc-omap-hdmi.o
+ obj-$(CONFIG_SND_SOC_OMAP_OSK5912) += snd-soc-osk5912.o
+diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
+--- a/sound/soc/ti/steelhead-tas5713.c	1969-12-31 16:00:00
++++ b/sound/soc/ti/steelhead-tas5713.c	2026-06-08 08:38:57
+@@ -0,0 +1,310 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ASoC machine driver for the Google Nexus Q / Steelhead TAS5713 speaker path.
++ */
++
++#include <linux/clk.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++#include "omap-mcbsp.h"
++
++#define STEELHEAD_TAS5713_MCLK_FS	256
++#define STEELHEAD_TAS5713_BCLK_FS	32
++
++struct steelhead_tas5713 {
++	struct snd_soc_card card;
++	struct clk *codec_mclk;
++	struct clk *codec_src;
++	struct clk *codec_src_parent;
++	struct clk *mcbsp_clk;
++	struct clk *mcbsp_parent;
++};
++
++static const struct snd_soc_dapm_widget steelhead_tas5713_widgets[] = {
++	SND_SOC_DAPM_SPK("Internal Speaker", NULL),
++};
++
++static const struct snd_soc_dapm_route steelhead_tas5713_routes[] = {
++	{ "Internal Speaker", NULL, "OUT_A" },
++	{ "Internal Speaker", NULL, "OUT_B" },
++	{ "Internal Speaker", NULL, "OUT_C" },
++	{ "Internal Speaker", NULL, "OUT_D" },
++};
++
++static void steelhead_tas5713_clk_put(void *data)
++{
++	clk_put(data);
++}
++
++static struct clk *steelhead_tas5713_get_legacy_clk(struct device *dev,
++						    const char *name)
++{
++	struct clk *clk;
++	int ret;
++
++	clk = clk_get(NULL, name);
++	if (IS_ERR(clk)) {
++		dev_warn(dev, "failed to get %s: %ld\n", name, PTR_ERR(clk));
++		return NULL;
++	}
++
++	ret = devm_add_action_or_reset(dev, steelhead_tas5713_clk_put, clk);
++	if (ret)
++		return ERR_PTR(ret);
++
++	return clk;
++}
++
++static int steelhead_tas5713_startup(struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
++	struct steelhead_tas5713 *priv = snd_soc_card_get_drvdata(rtd->card);
++	int ret;
++
++	if (!IS_ERR_OR_NULL(priv->codec_mclk)) {
++		ret = clk_prepare_enable(priv->codec_mclk);
++		if (ret)
++			return ret;
++	}
++
++	if (!IS_ERR_OR_NULL(priv->mcbsp_clk)) {
++		ret = clk_prepare_enable(priv->mcbsp_clk);
++		if (ret) {
++			clk_disable_unprepare(priv->codec_mclk);
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static void steelhead_tas5713_shutdown(struct snd_pcm_substream *substream)
++{
++	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
++	struct steelhead_tas5713 *priv = snd_soc_card_get_drvdata(rtd->card);
++
++	clk_disable_unprepare(priv->mcbsp_clk);
++	clk_disable_unprepare(priv->codec_mclk);
++}
++
++static int steelhead_tas5713_hw_params(struct snd_pcm_substream *substream,
++				       struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
++	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
++	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_card *card = rtd->card;
++	struct steelhead_tas5713 *priv = snd_soc_card_get_drvdata(card);
++	unsigned long clk_rate, target_rate, mclk_rate;
++	int clk_div;
++	int ret;
++
++	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
++		return -EINVAL;
++
++	mclk_rate = params_rate(params) * STEELHEAD_TAS5713_MCLK_FS;
++	if (!IS_ERR_OR_NULL(priv->codec_mclk)) {
++		ret = clk_set_rate(priv->codec_mclk, mclk_rate);
++		if (ret)
++			return ret;
++
++		mclk_rate = clk_get_rate(priv->codec_mclk);
++		if (mclk_rate != params_rate(params) * STEELHEAD_TAS5713_MCLK_FS)
++			dev_warn(card->dev, "codec mclk is %lu for rate %u\n",
++				 mclk_rate, params_rate(params));
++	}
++
++	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
++				  SND_SOC_DAIFMT_NB_NF |
++				  SND_SOC_DAIFMT_CBS_CFS);
++	if (ret)
++		return ret;
++
++	clk_rate = clk_get_rate(priv->mcbsp_clk);
++	target_rate = params_rate(params) * STEELHEAD_TAS5713_BCLK_FS;
++	clk_div = DIV_ROUND_CLOSEST(clk_rate, target_rate);
++
++	if (!clk_div || clk_div > 256 ||
++	    clk_rate / clk_div != target_rate ||
++	    clk_rate % target_rate) {
++		dev_err(card->dev,
++			"cannot derive bclk: parent=%lu target=%lu rate=%u div=%d\n",
++			clk_rate, target_rate, params_rate(params), clk_div);
++		return -EINVAL;
++	}
++
++	ret = snd_soc_dai_set_sysclk(cpu_dai, OMAP_MCBSP_SYSCLK_CLKS_FCLK,
++				     clk_rate, SND_SOC_CLOCK_IN);
++	if (ret)
++		return ret;
++
++	ret = snd_soc_dai_set_clkdiv(cpu_dai, OMAP_MCBSP_CLKGDV, clk_div);
++	if (ret)
++		return ret;
++
++	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
++				  SND_SOC_DAIFMT_NB_NF |
++				  SND_SOC_DAIFMT_CBS_CFS);
++	if (ret && ret != -ENOTSUPP)
++		return ret;
++
++	dev_dbg(card->dev, "rate=%u mclk=%lu mcbsp=%lu bclk=%lu div=%d\n",
++		params_rate(params), mclk_rate, clk_rate, target_rate, clk_div);
++
++	return 0;
++}
++
++static const struct snd_soc_ops steelhead_tas5713_ops = {
++	.startup = steelhead_tas5713_startup,
++	.shutdown = steelhead_tas5713_shutdown,
++	.hw_params = steelhead_tas5713_hw_params,
++};
++
++SND_SOC_DAILINK_DEFS(steelhead_tas5713,
++	DAILINK_COMP_ARRAY(COMP_EMPTY()),
++	DAILINK_COMP_ARRAY(COMP_CODEC(NULL, "tas571x-hifi")),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
++static struct snd_soc_dai_link steelhead_tas5713_link = {
++	.name = "TAS5713",
++	.stream_name = "TAS5713",
++	.dai_fmt = SND_SOC_DAIFMT_I2S |
++		   SND_SOC_DAIFMT_NB_NF |
++		   SND_SOC_DAIFMT_CBS_CFS,
++	.ops = &steelhead_tas5713_ops,
++	SND_SOC_DAILINK_REG(steelhead_tas5713),
++};
++
++static int steelhead_tas5713_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct steelhead_tas5713 *priv;
++	struct snd_soc_card *card;
++	struct device_node *cpu_np;
++	struct device_node *codec_np;
++	int ret;
++
++	if (!np)
++		return -ENODEV;
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	cpu_np = of_parse_phandle(np, "google,mcbsp", 0);
++	if (!cpu_np)
++		return dev_err_probe(dev, -EINVAL, "missing google,mcbsp\n");
++
++	codec_np = of_parse_phandle(np, "google,audio-codec", 0);
++	if (!codec_np) {
++		of_node_put(cpu_np);
++		return dev_err_probe(dev, -EINVAL, "missing google,audio-codec\n");
++	}
++
++	steelhead_tas5713_link.cpus->of_node = cpu_np;
++	steelhead_tas5713_link.platforms->of_node = cpu_np;
++	steelhead_tas5713_link.codecs->of_node = codec_np;
++
++	priv->codec_mclk = devm_clk_get_optional(dev, "codec-mclk");
++	if (IS_ERR(priv->codec_mclk))
++		return dev_err_probe(dev, PTR_ERR(priv->codec_mclk),
++				     "failed to get codec-mclk\n");
++
++	priv->codec_src = steelhead_tas5713_get_legacy_clk(dev, "auxclk1_src_ck");
++	if (IS_ERR(priv->codec_src))
++		return PTR_ERR(priv->codec_src);
++
++	priv->codec_src_parent =
++		steelhead_tas5713_get_legacy_clk(dev, "dpll_per_m3x2_ck");
++	if (IS_ERR(priv->codec_src_parent))
++		return PTR_ERR(priv->codec_src_parent);
++
++	priv->mcbsp_clk = devm_clk_get(dev, "mcbsp-sync");
++	if (IS_ERR(priv->mcbsp_clk))
++		return dev_err_probe(dev, PTR_ERR(priv->mcbsp_clk),
++				     "failed to get mcbsp-sync\n");
++
++	priv->mcbsp_parent = devm_clk_get_optional(dev, "mcbsp-parent");
++	if (IS_ERR(priv->mcbsp_parent))
++		return dev_err_probe(dev, PTR_ERR(priv->mcbsp_parent),
++				     "failed to get mcbsp-parent\n");
++
++	if (priv->codec_src_parent) {
++		ret = clk_set_rate(priv->codec_src_parent, 61440000);
++		if (ret)
++			dev_warn(dev, "failed to set codec parent rate: %d\n", ret);
++	}
++
++	if (priv->codec_src && priv->codec_src_parent) {
++		ret = clk_set_parent(priv->codec_src, priv->codec_src_parent);
++		if (ret)
++			dev_warn(dev, "failed to parent codec clock: %d\n", ret);
++	}
++
++	if (priv->codec_mclk) {
++		ret = clk_set_rate(priv->codec_mclk, 12288000);
++		if (ret)
++			dev_warn(dev, "failed to set codec mclk: %d\n", ret);
++	}
++
++	if (priv->mcbsp_parent) {
++		ret = clk_set_parent(priv->mcbsp_clk, priv->mcbsp_parent);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to parent mcbsp clock\n");
++	}
++
++	dev_info(dev, "clock rates: codec-mclk=%lu codec-src=%lu mcbsp=%lu\n",
++		 priv->codec_mclk ? clk_get_rate(priv->codec_mclk) : 0,
++		 priv->codec_src ? clk_get_rate(priv->codec_src) : 0,
++		 clk_get_rate(priv->mcbsp_clk));
++
++	card = &priv->card;
++	card->dev = dev;
++	card->owner = THIS_MODULE;
++	card->dai_link = &steelhead_tas5713_link;
++	card->num_links = 1;
++	card->dapm_widgets = steelhead_tas5713_widgets;
++	card->num_dapm_widgets = ARRAY_SIZE(steelhead_tas5713_widgets);
++	card->dapm_routes = steelhead_tas5713_routes;
++	card->num_dapm_routes = ARRAY_SIZE(steelhead_tas5713_routes);
++
++	ret = snd_soc_of_parse_card_name(card, "ti,model");
++	if (ret)
++		card->name = "Steelhead TAS5713";
++
++	snd_soc_card_set_drvdata(card, priv);
++
++	ret = devm_snd_soc_register_card(dev, card);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register card\n");
++
++	dev_info(dev, "registered Steelhead TAS5713 audio card\n");
++
++	return 0;
++}
++
++static const struct of_device_id steelhead_tas5713_of_match[] = {
++	{ .compatible = "google,steelhead-tas5713" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, steelhead_tas5713_of_match);
++
++static struct platform_driver steelhead_tas5713_driver = {
++	.driver = {
++		.name = "steelhead-tas5713",
++		.of_match_table = steelhead_tas5713_of_match,
++	},
++	.probe = steelhead_tas5713_probe,
++};
++module_platform_driver(steelhead_tas5713_driver);
++
++MODULE_DESCRIPTION("Google Nexus Q / Steelhead TAS5713 ASoC machine driver");
++MODULE_AUTHOR("Google, Inc.; Nexus Q revival contributors");
++MODULE_LICENSE("GPL");

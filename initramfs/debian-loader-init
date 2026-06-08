@@ -1,0 +1,86 @@
+#!/bin/sh
+
+PATH=/bin:/sbin
+export PATH
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /newroot
+
+configure_usb_gadget() {
+	CFG=/sys/kernel/config
+	mkdir -p "$CFG" 2>/dev/null || true
+	mount -t configfs configfs "$CFG" 2>/dev/null || true
+	[ -d "$CFG/usb_gadget" ] || return
+
+	G="$CFG/usb_gadget/nexusq"
+	mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" 2>/dev/null || true
+	echo 0x18d1 >"$G/idVendor" 2>/dev/null || true
+	echo 0x4e23 >"$G/idProduct" 2>/dev/null || true
+	echo 0x0200 >"$G/bcdUSB" 2>/dev/null || true
+	echo AW1S12250524 >"$G/strings/0x409/serialnumber" 2>/dev/null || true
+	echo NexusQ >"$G/strings/0x409/manufacturer" 2>/dev/null || true
+	echo "NexusQ Debian Loader" >"$G/strings/0x409/product" 2>/dev/null || true
+	echo "ACM+ECM" >"$G/configs/c.1/strings/0x409/configuration" 2>/dev/null || true
+	echo 250 >"$G/configs/c.1/MaxPower" 2>/dev/null || true
+
+	mkdir -p "$G/functions/acm.usb0" "$G/functions/ecm.usb0" 2>/dev/null || true
+	echo 02:16:42:00:00:02 >"$G/functions/ecm.usb0/dev_addr" 2>/dev/null || true
+	echo 02:16:42:00:00:01 >"$G/functions/ecm.usb0/host_addr" 2>/dev/null || true
+	ln -s "$G/functions/acm.usb0" "$G/configs/c.1/acm.usb0" 2>/dev/null || true
+	ln -s "$G/functions/ecm.usb0" "$G/configs/c.1/ecm.usb0" 2>/dev/null || true
+
+	for udc in /sys/class/udc/*; do
+		[ -e "$udc" ] || continue
+		echo "${udc##*/}" >"$G/UDC" 2>/dev/null || true
+		break
+	done
+}
+
+configure_usb_gadget
+
+reboot_fastboot() {
+	echo "debian-loader: rebooting to fastboot" >/dev/console 2>/dev/null || true
+	sync
+	/bin/nq-reboot-fastboot
+	sleep 60
+	reboot -f
+}
+
+rootdev="$(tr ' ' '\n' </proc/cmdline 2>/dev/null | sed -n 's/^nq.root=//p' | head -n 1)"
+if [ -z "$rootdev" ]; then
+	rootdev="$(tr ' ' '\n' </proc/cmdline 2>/dev/null | sed -n 's/^root=//p' | head -n 1)"
+fi
+case "$rootdev" in
+	""|/dev/ram*) rootdev=/dev/mmcblk0p13 ;;
+esac
+
+i=0
+while [ "$i" -lt 30 ] && [ ! -b "$rootdev" ]; do
+	echo "debian-loader: waiting for $rootdev" >/dev/console 2>/dev/null || true
+	i=$((i + 1))
+	sleep 1
+done
+
+if [ ! -b "$rootdev" ]; then
+	echo "debian-loader: missing root device $rootdev" >/dev/console 2>/dev/null || true
+	reboot_fastboot
+fi
+
+if ! mount -t ext4 -o rw "$rootdev" /newroot; then
+	echo "debian-loader: failed to mount $rootdev" >/dev/console 2>/dev/null || true
+	reboot_fastboot
+fi
+
+mkdir -p /newroot/proc /newroot/sys /newroot/dev
+umount /proc 2>/dev/null || true
+umount /sys 2>/dev/null || true
+umount /dev 2>/dev/null || true
+
+if [ ! -x /newroot/sbin/nq-init ]; then
+	echo "debian-loader: /sbin/nq-init missing from rootfs" >/dev/console 2>/dev/null || true
+	reboot_fastboot
+fi
+
+exec /bin/busybox switch_root /newroot /sbin/nq-init

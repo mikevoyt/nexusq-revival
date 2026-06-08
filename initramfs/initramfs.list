@@ -1,0 +1,37 @@
+dir /bin 755 0 0
+dir /sbin 755 0 0
+dir /dev 755 0 0
+dir /dev/pts 755 0 0
+dir /lib 755 0 0
+dir /system 755 0 0
+dir /cache 755 0 0
+dir /userdata 755 0 0
+dir /proc 755 0 0
+dir /sys 755 0 0
+dir /tmp 1777 0 0
+dir /run 755 0 0
+file /init initramfs/init 755 0 0
+file /sbin/hotplug initramfs/hotplug 755 0 0
+file /bin/busybox third_party/busybox-armv7l 755 0 0
+file /bin/tinyplay artifacts/bin/tinyplay 755 0 0
+file /bin/nqstreamd artifacts/bin/nqstreamd 755 0 0
+file /bin/reboot-bootloader artifacts/bin/reboot-bootloader 755 0 0
+file /bin/nq-autoreboot-cancel initramfs/nq-autoreboot-cancel 755 0 0
+file /bin/nq-autoreboot-status initramfs/nq-autoreboot-status 755 0 0
+file /bin/nq-watchdog-status initramfs/nq-watchdog-status 755 0 0
+file /bin/nq-reboot-fastboot initramfs/nq-reboot-fastboot 755 0 0
+file /bin/test-audio initramfs/test-audio 755 0 0
+file /bin/test-wifi initramfs/test-wifi 755 0 0
+file /tmp/test-tone-1khz-48k-stereo.wav artifacts/test-tone-1khz-48k-stereo.wav 644 0 0
+slink /bin/sh /bin/busybox 777 0 0
+slink /bin/mount /bin/busybox 777 0 0
+slink /bin/mkdir /bin/busybox 777 0 0
+slink /bin/mknod /bin/busybox 777 0 0
+slink /bin/sleep /bin/busybox 777 0 0
+slink /sbin/mdev /bin/busybox 777 0 0
+slink /lib/firmware /system/vendor/firmware 777 0 0
+slink /tmp/test.wav /tmp/test-tone-1khz-48k-stereo.wav 777 0 0
+nod /dev/console 600 0 0 c 5 1
+nod /dev/null 666 0 0 c 1 3
+nod /dev/zero 666 0 0 c 1 5
+nod /dev/tty 666 0 0 c 5 0
