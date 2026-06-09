@@ -116,6 +116,4 @@ Android `system` partition mounted read-only from `/dev/mmcblk0p11`.
 
 ## Project Page
 
-GitHub Pages content lives in [docs/](docs/). The generated hero image is
-project-owned artwork, not a scraped product photo.
-
+GitHub Pages content lives in [docs/](docs/).
