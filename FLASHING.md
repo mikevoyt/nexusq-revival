@@ -64,6 +64,11 @@ The runner injects Wi-Fi config and an SSH public key through the temporary
 serial shell. It does not write the Wi-Fi password into tracked files or the
 shareable release images.
 
+For appliance-style use, add `--persist-provisioning --leave-running`. That
+copies the runtime Wi-Fi, SSH, and RNG seed files into device-local persistent
+state under `/etc/nexusq/` and `/var/lib/nexusq/`, cancels the safety timer, and
+leaves Debian running. See [APPLIANCE.md](APPLIANCE.md).
+
 ## Fastboot Recovery
 
 The release boot command line includes `nq.autoreboot=180`. If the boot reaches
@@ -84,4 +89,3 @@ Cancel the timer for longer sessions:
 
 If userspace does not start, use the Nexus Q's normal manual fastboot recovery
 procedure and boot again with `fastboot boot`.
-

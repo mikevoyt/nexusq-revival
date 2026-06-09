@@ -47,13 +47,16 @@ The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
 - drops to `/bin/sh`.
 
 The rootfs also includes `/sbin/nq-prepare-wifi-firmware`,
-`/sbin/nq-load-wifi`, and `/sbin/nq-start-network`. The public Wi-Fi path
+`/sbin/nq-load-wifi`, `/sbin/nq-start-network`, `/sbin/nq-provision`, and
+`/sbin/nq-appliance-status`. The public Wi-Fi path
 prepares Debian `brcmfmac4330-sdio.bin`, copies Steelhead BCM4330 NVRAM
 calibration from the stock Android `system` partition when available, loads the
 modular Broadcom driver, accepts runtime-only Wi-Fi and SSH files in
-`/run/nexusq/` or `/tmp/`, seeds early boot entropy when `/tmp/rng.seed`
-exists, starts `wpa_supplicant`, obtains DHCP with BusyBox `udhcpc`, installs
-an injected `authorized_keys`, and restarts Dropbear for key-only SSH.
+`/run/nexusq/` or `/tmp/`, accepts persistent device-local config in
+`/etc/nexusq/`, seeds early boot entropy when `/tmp/rng.seed` or
+`/var/lib/nexusq/rng.seed` exists, starts `wpa_supplicant`, obtains DHCP with
+BusyBox `udhcpc`, installs an injected or persistent `authorized_keys`, and
+restarts Dropbear for key-only SSH.
 
 Because this builder extracts `.deb` archives without running maintainer
 scripts, it writes minimal `/etc/passwd`, `/etc/group`, and `/etc/shadow`

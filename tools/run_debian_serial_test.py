@@ -32,6 +32,21 @@ def main():
     parser.add_argument("--ssh-key", default=str(DEFAULT_SSH_KEY))
     parser.add_argument("--no-ssh-test", action="store_true")
     parser.add_argument(
+        "--persist-provisioning",
+        action="store_true",
+        help="install uploaded Wi-Fi, SSH, and RNG seed files into persistent /etc/nexusq state",
+    )
+    parser.add_argument(
+        "--cancel-autoreboot",
+        action="store_true",
+        help="cancel the target's safety return-to-fastboot timer during provisioning",
+    )
+    parser.add_argument(
+        "--leave-running",
+        action="store_true",
+        help="leave the target running instead of asking it to return to fastboot at the end",
+    )
+    parser.add_argument(
         "--ssh-command",
         default="uname -a; cat /etc/debian_version; ip addr show wlan0",
         help="command to run on the target after Debian Wi-Fi SSH is up",
@@ -45,6 +60,8 @@ def main():
         raise SystemExit("missing Wi-Fi SSID; pass --ssid or set NQ_WIFI_SSID")
     if not args.keychain_account:
         args.keychain_account = args.ssid
+    if args.leave_running:
+        args.cancel_autoreboot = True
 
     image = Path(args.image)
     rootfs = Path(args.rootfs)
@@ -88,6 +105,7 @@ def main():
         wifi.write(
             fd,
             b"\r\n__NQ_RNG_SEED__\r\nchmod 600 /tmp/rng.seed\r\n"
+            b"mkdir -p /run/nexusq\r\ncp /tmp/rng.seed /run/nexusq/rng.seed\r\nchmod 600 /run/nexusq/rng.seed\r\n"
             + wifi.marker_command(seed_marker)
             + b"\r\n",
         )
@@ -115,6 +133,43 @@ def main():
             + b"\r\n",
         )
         wifi.require_marker(wifi.read_until(fd, [config_marker], 20), config_marker, "wifi config upload")
+
+        if args.cancel_autoreboot and not args.persist_provisioning:
+            cancel_marker = f"__NQ_DEBIAN_CANCEL_AUTOREBOOT_{int(time.time() * 1000)}__".encode()
+            wifi.write(
+                fd,
+                b"/sbin/nq-autoreboot-cancel; rc=$?; "
+                + wifi.marker_command(cancel_marker, "rc")
+                + b"\r\n",
+            )
+            cancel_data = wifi.read_until(fd, [cancel_marker], 20, print_output=True)
+            wifi.require_marker(cancel_data, cancel_marker, "autoreboot cancellation")
+            if cancel_marker + b":0" not in cancel_data:
+                raise SystemExit("autoreboot cancellation failed")
+
+        if args.persist_provisioning:
+            provision_marker = f"__NQ_DEBIAN_PROVISION_READY_{int(time.time() * 1000)}__".encode()
+            provision_cmd = (
+                "/sbin/nq-provision "
+                "--wifi /run/nexusq/wpa_supplicant.conf "
+                "--rng-seed /run/nexusq/rng.seed "
+            )
+            if ssh_pub is not None:
+                provision_cmd += "--authorized-keys /run/nexusq/authorized_keys "
+            if args.cancel_autoreboot:
+                provision_cmd += "--cancel-autoreboot "
+            provision_cmd += "--status"
+            wifi.write(
+                fd,
+                provision_cmd.encode("ascii")
+                + b"; rc=$?; "
+                + wifi.marker_command(provision_marker, "rc")
+                + b"\r\n",
+            )
+            provision_data = wifi.read_until(fd, [provision_marker], 30, print_output=True)
+            wifi.require_marker(provision_data, provision_marker, "persistent provisioning")
+            if provision_marker + b":0" not in provision_data:
+                raise SystemExit("persistent provisioning failed")
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = ROOT / "build" / f"live-debian-wifi-network-{stamp}.txt"
@@ -177,9 +232,16 @@ def main():
             sys.stdout.flush()
     finally:
         if fd is not None:
-            wifi.write(fd, b"\r\nsync\r\n/sbin/nq-reboot-fastboot\r\n")
+            if args.leave_running:
+                wifi.write(fd, b"\r\nsync\r\n")
+            else:
+                wifi.write(fd, b"\r\nsync\r\n/sbin/nq-reboot-fastboot\r\n")
             time.sleep(1)
             os.close(fd)
+
+    if args.leave_running:
+        print("left target running by request")
+        return 0
 
     fb = wifi.wait_fastboot(120)
     if fb:
