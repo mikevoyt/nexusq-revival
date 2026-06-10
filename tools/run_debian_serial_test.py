@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -50,6 +51,31 @@ def main():
         "--ssh-command",
         default="uname -a; cat /etc/debian_version; ip addr show wlan0",
         help="command to run on the target after Debian Wi-Fi SSH is up",
+    )
+    parser.add_argument(
+        "--enable-squeezelite",
+        action="store_true",
+        help="upload and start an opt-in Music Assistant Squeezelite player config",
+    )
+    parser.add_argument(
+        "--squeezelite-name",
+        default=os.environ.get("NQ_SQUEEZELITE_NAME", "Nexus Q"),
+        help="Squeezelite player name shown in Music Assistant",
+    )
+    parser.add_argument(
+        "--squeezelite-server",
+        default=os.environ.get("NQ_SQUEEZELITE_SERVER", ""),
+        help="optional Music Assistant server host[:port]; omit for SlimProto discovery",
+    )
+    parser.add_argument(
+        "--squeezelite-output",
+        default=os.environ.get("NQ_SQUEEZELITE_OUTPUT", "hw:0,0"),
+        help="ALSA output device for Squeezelite",
+    )
+    parser.add_argument(
+        "--squeezelite-rates",
+        default=os.environ.get("NQ_SQUEEZELITE_RATES", "48000"),
+        help="comma-separated sample rates advertised by Squeezelite",
     )
     parser.add_argument("--no-boot", action="store_true", help="use an already-booted serial shell")
     parser.add_argument("--boot-timeout", type=int, default=150)
@@ -134,6 +160,32 @@ def main():
         )
         wifi.require_marker(wifi.read_until(fd, [config_marker], 20), config_marker, "wifi config upload")
 
+        if args.enable_squeezelite:
+            player_env = "".join(
+                [
+                    "NQ_SQUEEZELITE_ENABLE=1\n",
+                    f"NQ_SQUEEZELITE_NAME={shlex.quote(args.squeezelite_name)}\n",
+                    f"NQ_SQUEEZELITE_OUTPUT={shlex.quote(args.squeezelite_output)}\n",
+                    f"NQ_SQUEEZELITE_RATES={shlex.quote(args.squeezelite_rates)}\n",
+                ]
+            )
+            if args.squeezelite_server:
+                player_env += f"NQ_SQUEEZELITE_SERVER={shlex.quote(args.squeezelite_server)}\n"
+            player_marker = f"__NQ_DEBIAN_PLAYER_CONFIG_READY_{int(time.time() * 1000)}__".encode()
+            wifi.write(fd, b"mkdir -p /run/nexusq\r\ncat >/run/nexusq/squeezelite.env <<'__NQ_SQUEEZELITE_ENV__'\r\n")
+            wifi.write(fd, player_env.encode("utf-8"))
+            wifi.write(
+                fd,
+                b"__NQ_SQUEEZELITE_ENV__\r\nchmod 644 /run/nexusq/squeezelite.env\r\n"
+                + wifi.marker_command(player_marker)
+                + b"\r\n",
+            )
+            wifi.require_marker(
+                wifi.read_until(fd, [player_marker], 20),
+                player_marker,
+                "squeezelite config upload",
+            )
+
         if args.cancel_autoreboot and not args.persist_provisioning:
             cancel_marker = f"__NQ_DEBIAN_CANCEL_AUTOREBOOT_{int(time.time() * 1000)}__".encode()
             wifi.write(
@@ -156,6 +208,8 @@ def main():
             )
             if ssh_pub is not None:
                 provision_cmd += "--authorized-keys /run/nexusq/authorized_keys "
+            if args.enable_squeezelite:
+                provision_cmd += "--squeezelite /run/nexusq/squeezelite.env "
             if args.cancel_autoreboot:
                 provision_cmd += "--cancel-autoreboot "
             provision_cmd += "--status"
@@ -178,7 +232,12 @@ def main():
         wifi.write(
             fd,
             b"/sbin/nq-autoreboot-status; /sbin/nq-start-network; rc=$?; "
-            b"echo __NQ_DEBIAN_TEST_DONE__:$rc; "
+            + (
+                b"/sbin/nq-start-squeezelite; /sbin/nq-player-status; "
+                if args.enable_squeezelite
+                else b""
+            )
+            + b"echo __NQ_DEBIAN_TEST_DONE__:$rc; "
             b"cat /etc/debian_version 2>/dev/null; "
             b"cat /run/nexusq-network.log 2>/dev/null; "
             + wifi.marker_command(done_marker)

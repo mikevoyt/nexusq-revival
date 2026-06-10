@@ -27,6 +27,7 @@ image failed with `remote: 'data too large'`.
 - USB/network tools: `iproute2`, `ifupdown`, `isc-dhcp-client`, `netbase`.
 - Debug access: `dropbear-bin`, `busybox-static`.
 - Audio tools: `alsa-utils`, `alsa-ucm-conf`.
+- Music Assistant endpoint prep: `squeezelite`.
 - Wi-Fi prep: `wpasupplicant`, `wireless-regdb`, `firmware-brcm80211`.
 
 The current Linux 6.6 no-SMP kernel spike has validated TAS5713 ALSA from the
@@ -47,8 +48,9 @@ The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
 - drops to `/bin/sh`.
 
 The rootfs also includes `/sbin/nq-prepare-wifi-firmware`,
-`/sbin/nq-load-wifi`, `/sbin/nq-start-network`, `/sbin/nq-provision`, and
-`/sbin/nq-appliance-status`. The public Wi-Fi path
+`/sbin/nq-load-wifi`, `/sbin/nq-start-network`,
+`/sbin/nq-start-squeezelite`, `/sbin/nq-player-status`,
+`/sbin/nq-provision`, and `/sbin/nq-appliance-status`. The public Wi-Fi path
 prepares Debian `brcmfmac4330-sdio.bin`, copies Steelhead BCM4330 NVRAM
 calibration from the stock Android `system` partition when available, loads the
 modular Broadcom driver, accepts runtime-only Wi-Fi and SSH files in
@@ -56,7 +58,8 @@ modular Broadcom driver, accepts runtime-only Wi-Fi and SSH files in
 `/etc/nexusq/`, seeds early boot entropy when `/tmp/rng.seed` or
 `/var/lib/nexusq/rng.seed` exists, starts `wpa_supplicant`, obtains DHCP with
 BusyBox `udhcpc`, installs an injected or persistent `authorized_keys`, and
-restarts Dropbear for key-only SSH.
+restarts Dropbear for key-only SSH. Squeezelite starts only when an opt-in
+`squeezelite.env` enables it.
 
 Because this builder extracts `.deb` archives without running maintainer
 scripts, it writes minimal `/etc/passwd`, `/etc/group`, and `/etc/shadow`
@@ -128,7 +131,9 @@ The Debian rootfs runner, `tools/run_debian_serial_test.py`, uses the same
 secret handling model. It can flash the sparse rootfs to `userdata`, RAM-boot
 the loader image, upload Wi-Fi config, upload an SSH public key, start
 `/sbin/nq-start-network`, verify SSH, and then ask the device to return to
-fastboot. It does not write credentials into the shareable rootfs image.
+fastboot. It can also upload and start a non-secret Squeezelite config with
+`--enable-squeezelite`. It does not write credentials into the shareable rootfs
+image.
 
 ## Live Test Results
 

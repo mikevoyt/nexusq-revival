@@ -20,6 +20,7 @@ Persistent files:
 
 - `/etc/nexusq/wpa_supplicant.conf`
 - `/etc/nexusq/authorized_keys`
+- `/etc/nexusq/squeezelite.env`
 - `/var/lib/nexusq/rng.seed`
 
 Do not commit real Wi-Fi config, private keys, or generated seeds. They belong
@@ -66,6 +67,40 @@ Check status:
 cat /run/nexusq-network.log
 ```
 
+## Music Assistant Player
+
+The appliance rootfs can act as a Music Assistant Squeezelite player endpoint.
+Run the Music Assistant server on a supported 64-bit host and keep it on the
+same local network as the Q.
+
+Persist an opt-in Squeezelite config:
+
+```sh
+cat >/run/nexusq/squeezelite.env <<'EOF'
+NQ_SQUEEZELITE_ENABLE=1
+NQ_SQUEEZELITE_NAME='Nexus Q'
+NQ_SQUEEZELITE_OUTPUT=hw:0,0
+NQ_SQUEEZELITE_RATES=48000
+# Optional if SlimProto discovery does not work:
+# NQ_SQUEEZELITE_SERVER=192.168.1.20:3483
+EOF
+
+/sbin/nq-provision \
+  --squeezelite /run/nexusq/squeezelite.env \
+  --start-squeezelite \
+  --status
+```
+
+Check the player:
+
+```sh
+/sbin/nq-player-status
+cat /run/nexusq-squeezelite.log
+```
+
+See [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md) for the porting rationale and
+Music Assistant setup notes.
+
 ## Host-Side Provisioning
 
 The Debian serial runner can provision persistently without writing secrets into
@@ -78,12 +113,14 @@ python3 tools/run_debian_serial_test.py \
   --rootfs artifacts/nexusq-debian-trixie-armhf-rootfs.sparse.img \
   --ssid "<ssid>" \
   --keychain-service nexusq-wifi \
+  --enable-squeezelite \
   --persist-provisioning \
   --leave-running
 ```
 
 `--leave-running` cancels the safety timer and does not ask the target to return
-to fastboot at the end. Omit it during risky tests.
+to fastboot at the end. Omit it during risky tests. Omit
+`--enable-squeezelite` when you only want Wi-Fi/SSH provisioning.
 
 ## Recovery
 
@@ -99,7 +136,7 @@ Manual recovery from Debian:
 Clear persistent appliance state:
 
 ```sh
-/sbin/nq-provision --clear-wifi --clear-authorized-keys --clear-rng-seed
+/sbin/nq-provision --clear-wifi --clear-authorized-keys --clear-squeezelite --clear-rng-seed
 ```
 
 If userspace does not start, use the Nexus Q manual fastboot procedure and boot

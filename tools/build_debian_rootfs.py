@@ -35,6 +35,7 @@ EXTRA_PACKAGES = {
     "dbus",
     "alsa-utils",
     "alsa-ucm-conf",
+    "squeezelite",
     "wpasupplicant",
     "wireless-regdb",
     "firmware-brcm80211",
@@ -374,6 +375,12 @@ else
     echo "rng: persistent seed missing"
 fi
 
+if [ -s /etc/nexusq/squeezelite.env ]; then
+    echo "squeezelite: persistent config present"
+else
+    echo "squeezelite: persistent config missing"
+fi
+
 /sbin/nq-autoreboot-status 2>/dev/null || true
 
 if [ -e /sys/class/net/wlan0 ]; then
@@ -386,6 +393,12 @@ if pgrep -x dropbear >/dev/null 2>&1 || pidof dropbear >/dev/null 2>&1; then
     echo "ssh: dropbear running"
 else
     echo "ssh: dropbear not running"
+fi
+
+if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+    echo "squeezelite: running"
+else
+    echo "squeezelite: not running"
 fi
 """,
         0o755,
@@ -401,6 +414,7 @@ CONFIG_DIR=/etc/nexusq
 STATE_DIR=/var/lib/nexusq
 WPA_DEST="$CONFIG_DIR/wpa_supplicant.conf"
 AUTH_DEST="$CONFIG_DIR/authorized_keys"
+SQUEEZELITE_DEST="$CONFIG_DIR/squeezelite.env"
 RNG_DEST="$STATE_DIR/rng.seed"
 
 usage() {
@@ -412,12 +426,15 @@ Persist appliance provisioning files into the Debian rootfs.
 Options:
   --wifi PATH              Copy PATH to /etc/nexusq/wpa_supplicant.conf
   --authorized-keys PATH   Copy PATH to /etc/nexusq/authorized_keys
+  --squeezelite PATH       Copy PATH to /etc/nexusq/squeezelite.env
   --rng-seed PATH          Copy PATH to /var/lib/nexusq/rng.seed
   --clear-wifi             Remove persistent Wi-Fi config
   --clear-authorized-keys  Remove persistent SSH authorized_keys
+  --clear-squeezelite      Remove persistent Squeezelite config
   --clear-rng-seed         Remove persistent RNG seed
   --cancel-autoreboot      Cancel the current safety return-to-fastboot timer
   --start-network          Start or restart Wi-Fi, DHCP, and Dropbear
+  --start-squeezelite      Start or restart the Music Assistant player endpoint
   --status                 Print appliance status after changes
   -h, --help               Show this help
 USAGE
@@ -446,12 +463,15 @@ copy_secret() {
 
 wifi_src=
 auth_src=
+squeezelite_src=
 rng_src=
 clear_wifi=0
 clear_auth=0
+clear_squeezelite=0
 clear_rng=0
 cancel_autoreboot=0
 start_network=0
+start_squeezelite=0
 show_status=0
 
 while [ "$#" -gt 0 ]; do
@@ -464,6 +484,11 @@ while [ "$#" -gt 0 ]; do
         --authorized-keys)
             [ "$#" -ge 2 ] || die "--authorized-keys requires a path"
             auth_src="$2"
+            shift 2
+            ;;
+        --squeezelite)
+            [ "$#" -ge 2 ] || die "--squeezelite requires a path"
+            squeezelite_src="$2"
             shift 2
             ;;
         --rng-seed)
@@ -479,6 +504,10 @@ while [ "$#" -gt 0 ]; do
             clear_auth=1
             shift
             ;;
+        --clear-squeezelite)
+            clear_squeezelite=1
+            shift
+            ;;
         --clear-rng-seed)
             clear_rng=1
             shift
@@ -489,6 +518,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --start-network)
             start_network=1
+            shift
+            ;;
+        --start-squeezelite)
+            start_squeezelite=1
             shift
             ;;
         --status)
@@ -510,10 +543,12 @@ chmod 700 "$CONFIG_DIR" "$STATE_DIR" 2>/dev/null || true
 
 [ "$clear_wifi" -eq 0 ] || { rm -f "$WPA_DEST"; echo "removed $WPA_DEST"; }
 [ "$clear_auth" -eq 0 ] || { rm -f "$AUTH_DEST"; echo "removed $AUTH_DEST"; }
+[ "$clear_squeezelite" -eq 0 ] || { rm -f "$SQUEEZELITE_DEST"; echo "removed $SQUEEZELITE_DEST"; }
 [ "$clear_rng" -eq 0 ] || { rm -f "$RNG_DEST"; echo "removed $RNG_DEST"; }
 
 [ -z "$wifi_src" ] || copy_secret "$wifi_src" "$WPA_DEST" 600
 [ -z "$auth_src" ] || copy_secret "$auth_src" "$AUTH_DEST" 600
+[ -z "$squeezelite_src" ] || copy_secret "$squeezelite_src" "$SQUEEZELITE_DEST" 644
 [ -z "$rng_src" ] || copy_secret "$rng_src" "$RNG_DEST" 600
 
 if [ "$cancel_autoreboot" -eq 1 ]; then
@@ -524,7 +559,11 @@ if [ "$start_network" -eq 1 ]; then
     /sbin/nq-start-network
 fi
 
-if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ]; then
+if [ "$start_squeezelite" -eq 1 ]; then
+    /sbin/nq-start-squeezelite
+fi
+
+if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ] || [ "$start_squeezelite" -eq 1 ]; then
     /sbin/nq-appliance-status
 fi
 """,
@@ -734,9 +773,15 @@ fi
 if [ -s "$WPA_CONF" ] && command -v wpa_supplicant >/dev/null 2>&1; then
     killall wpa_supplicant 2>/dev/null || true
     wpa_supplicant -B -i wlan0 -c "$WPA_CONF" -P /run/wpa_supplicant.wlan0.pid
+    wpa_ping() {
+        wpa_cli -p /run/wpa_supplicant -i wlan0 ping 2>/dev/null
+    }
+    wpa_status() {
+        wpa_cli -p /run/wpa_supplicant -i wlan0 status 2>/dev/null
+    }
     i=0
     while [ "$i" -lt 20 ]; do
-        if wpa_cli -i wlan0 ping 2>/dev/null | grep -q PONG; then
+        if wpa_ping | grep -q PONG; then
             break
         fi
         i=$((i + 1))
@@ -745,8 +790,8 @@ if [ -s "$WPA_CONF" ] && command -v wpa_supplicant >/dev/null 2>&1; then
     i=0
     while [ "$i" -lt 40 ]; do
         echo "--- wpa_cli status poll $i ---"
-        wpa_cli -i wlan0 status 2>/dev/null || true
-        if wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; then
+        wpa_status || true
+        if wpa_status | grep -q '^wpa_state=COMPLETED'; then
             break
         fi
         i=$((i + 1))
@@ -799,6 +844,136 @@ if [ -d /var/lib/nexusq ]; then
     ) &
 fi
 echo "[nq-network] done"
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-start-squeezelite",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-squeezelite.log
+PID=/run/nq-squeezelite.pid
+mkdir -p /run /run/nexusq
+: >"$LOG"
+exec >>"$LOG" 2>&1
+
+echo "[nq-squeezelite] starting"
+date 2>/dev/null || true
+
+for env in /etc/nexusq/squeezelite.env /run/nexusq/squeezelite.env /tmp/squeezelite.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_SQUEEZELITE_ENABLE:=0}"
+: "${NQ_SQUEEZELITE_NAME:=Nexus Q}"
+: "${NQ_SQUEEZELITE_OUTPUT:=hw:0,0}"
+: "${NQ_SQUEEZELITE_RATES:=48000}"
+: "${NQ_SQUEEZELITE_CLOSE_TIMEOUT:=5}"
+
+if [ "$NQ_SQUEEZELITE_ENABLE" != "1" ]; then
+    echo "[nq-squeezelite] disabled; set NQ_SQUEEZELITE_ENABLE=1"
+    exit 0
+fi
+
+if ! command -v squeezelite >/dev/null 2>&1; then
+    echo "[nq-squeezelite] squeezelite command missing"
+    exit 1
+fi
+
+derive_mac() {
+    if [ -n "$NQ_SQUEEZELITE_MAC" ]; then
+        echo "$NQ_SQUEEZELITE_MAC"
+        return
+    fi
+    tr ' ' '\\n' </proc/cmdline 2>/dev/null | sed -n 's/^androidboot.wifi_macaddr=//p' | head -n 1
+    for iface in wlan0 usb0 eth0; do
+        [ -r "/sys/class/net/$iface/address" ] || continue
+        cat "/sys/class/net/$iface/address"
+        return
+    done
+}
+
+mac="$(derive_mac | head -n 1)"
+case "$mac" in
+    [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+        ;;
+    *)
+        mac=
+        ;;
+esac
+
+killall squeezelite 2>/dev/null || true
+pkill -x squeezelite 2>/dev/null || true
+sleep 1
+
+set -- squeezelite \
+    -n "$NQ_SQUEEZELITE_NAME" \
+    -o "$NQ_SQUEEZELITE_OUTPUT" \
+    -r "$NQ_SQUEEZELITE_RATES" \
+    -C "$NQ_SQUEEZELITE_CLOSE_TIMEOUT" \
+    -f "$LOG"
+
+[ -z "$mac" ] || set -- "$@" -m "$mac"
+[ -z "$NQ_SQUEEZELITE_SERVER" ] || set -- "$@" -s "$NQ_SQUEEZELITE_SERVER"
+[ -z "$NQ_SQUEEZELITE_ALSA_PARAMS" ] || set -- "$@" -a "$NQ_SQUEEZELITE_ALSA_PARAMS"
+[ -z "$NQ_SQUEEZELITE_CODEC_LIST" ] || set -- "$@" -c "$NQ_SQUEEZELITE_CODEC_LIST"
+
+echo "[nq-squeezelite] exec: $*"
+"$@" &
+echo "$!" >"$PID"
+sleep 1
+
+if kill -0 "$(cat "$PID")" 2>/dev/null; then
+    echo "[nq-squeezelite] pid=$(cat "$PID")"
+    exit 0
+fi
+
+echo "[nq-squeezelite] failed to stay running"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-player-status",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+echo "Nexus Q player status"
+
+if command -v squeezelite >/dev/null 2>&1; then
+    echo "squeezelite: installed"
+else
+    echo "squeezelite: missing"
+fi
+
+if [ -s /etc/nexusq/squeezelite.env ]; then
+    echo "config: /etc/nexusq/squeezelite.env present"
+else
+    echo "config: /etc/nexusq/squeezelite.env missing"
+fi
+
+if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+    echo "squeezelite: running"
+    ps | grep '[s]queezelite' 2>/dev/null || true
+else
+    echo "squeezelite: not running"
+fi
+
+if command -v aplay >/dev/null 2>&1; then
+    aplay -l 2>/dev/null || true
+fi
+
+if [ -s /run/nexusq-squeezelite.log ]; then
+    echo "--- /run/nexusq-squeezelite.log ---"
+    tail -n 80 /run/nexusq-squeezelite.log 2>/dev/null || cat /run/nexusq-squeezelite.log
+fi
 """,
         0o755,
     )
@@ -891,6 +1066,10 @@ if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.con
     /sbin/nq-start-network
 fi
 
+if [ -x /sbin/nq-start-squeezelite ]; then
+    /sbin/nq-start-squeezelite || true
+fi
+
 if command -v busybox >/dev/null 2>&1; then
     busybox telnetd -l /bin/sh -p 2323 &
 fi
@@ -913,6 +1092,7 @@ Do not bake Wi-Fi passwords or private keys into public rootfs images.
 Expected files:
 - /etc/nexusq/wpa_supplicant.conf
 - /etc/nexusq/authorized_keys
+- /etc/nexusq/squeezelite.env
 
 Runtime-only test files in /run/nexusq override these persistent files.
 """,

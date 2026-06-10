@@ -54,8 +54,11 @@ a {
 .nav {
   position: absolute;
   top: 22px;
+  left: 28px;
   right: 28px;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 18px;
   font-size: 14px;
   font-weight: 700;
@@ -296,7 +299,8 @@ h2 {
 
   .nav {
     left: 22px;
-    right: auto;
+    right: 22px;
+    justify-content: flex-start;
   }
 
   .hero__content {

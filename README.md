@@ -18,6 +18,7 @@ Validated on real Nexus Q hardware on June 8, 2026:
 - Dropbear SSH accepts injected root public-key auth over Wi-Fi.
 - ALSA exposes `card 0: TAS5713 [Steelhead TAS5713]`.
 - `speaker-test` opens `hw:0,0` at 48 kHz stereo.
+- Opt-in Squeezelite endpoint support is staged for Music Assistant playback.
 - The boot image arms an automatic return-to-fastboot timer for safer testing.
 
 Still experimental:
@@ -25,8 +26,8 @@ Still experimental:
 - The release is intended for `fastboot boot`, not permanent daily-driver boot
   flashing yet.
 - Full systemd service bring-up is not the default init path.
-- HDMI, S/PDIF, LEDs, top ring controls, and a real streaming protocol are not
-  finished.
+- HDMI, S/PDIF, LEDs, top ring controls, and hardware volume integration are
+  not finished.
 - Wi-Fi depends on calibration from an existing stock `system` partition, or a
   user-supplied Broadcom NVRAM text file.
 
@@ -81,6 +82,8 @@ fastboot after about three minutes unless cancelled from the serial shell:
 Detailed instructions are in [FLASHING.md](FLASHING.md).
 Persistent Wi-Fi/SSH provisioning for appliance-style use is documented in
 [APPLIANCE.md](APPLIANCE.md).
+Music Assistant player endpoint setup is documented in
+[MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md).
 
 ## Build
 
