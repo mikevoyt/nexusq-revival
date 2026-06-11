@@ -44,6 +44,8 @@ NQ_SQUEEZELITE_ENABLE=1
 NQ_SQUEEZELITE_NAME='Nexus Q'
 NQ_SQUEEZELITE_OUTPUT=hw:0,0
 NQ_SQUEEZELITE_RATES=48000
+NQ_SQUEEZELITE_MASTER_VOLUME=190
+NQ_SQUEEZELITE_SPEAKER_VOLUME=204
 # Optional: bypass SlimProto discovery.
 # NQ_SQUEEZELITE_SERVER=192.168.1.20:3483
 EOF
@@ -96,6 +98,9 @@ automatically.
 - Squeezelite startup is handled by `nq-init`, not by a normal systemd unit.
 - The default sample-rate advertisement is `48000` because `speaker-test` has
   only been validated on the TAS5713 path at 48 kHz.
+- TAS5713 mixer values are raw ALSA control values, not linear loudness
+  percentages. `NQ_SQUEEZELITE_MASTER_VOLUME=190` is about `-8.5 dB`; `207` is
+  roughly 0 dB and should be treated as loud.
 - LEDs, ring controls, and hardware volume integration are not wired into Music
   Assistant yet.
 - Full Music Assistant server-on-Q support remains a research project, not the

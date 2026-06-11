@@ -874,6 +874,11 @@ done
 : "${NQ_SQUEEZELITE_OUTPUT:=hw:0,0}"
 : "${NQ_SQUEEZELITE_RATES:=48000}"
 : "${NQ_SQUEEZELITE_CLOSE_TIMEOUT:=5}"
+: "${NQ_SQUEEZELITE_MIXER_CARD:=0}"
+: "${NQ_SQUEEZELITE_MASTER_VOLUME:=190}"
+: "${NQ_SQUEEZELITE_SPEAKER_VOLUME:=204}"
+: "${NQ_SQUEEZELITE_SPEAKER_SWITCH:=on}"
+: "${NQ_SQUEEZELITE_RESTART:=0}"
 
 if [ "$NQ_SQUEEZELITE_ENABLE" != "1" ]; then
     echo "[nq-squeezelite] disabled; set NQ_SQUEEZELITE_ENABLE=1"
@@ -907,9 +912,33 @@ case "$mac" in
         ;;
 esac
 
-killall squeezelite 2>/dev/null || true
-pkill -x squeezelite 2>/dev/null || true
-sleep 1
+if command -v amixer >/dev/null 2>&1; then
+    speaker_volume="$NQ_SQUEEZELITE_SPEAKER_VOLUME"
+    case "$speaker_volume" in
+        *,*) ;;
+        *) speaker_volume="$speaker_volume,$speaker_volume" ;;
+    esac
+
+    echo "[nq-squeezelite] setting mixer: card=$NQ_SQUEEZELITE_MIXER_CARD master=$NQ_SQUEEZELITE_MASTER_VOLUME speaker=$speaker_volume switch=$NQ_SQUEEZELITE_SPEAKER_SWITCH"
+    amixer -q -c "$NQ_SQUEEZELITE_MIXER_CARD" cset name="Speaker Switch" "$NQ_SQUEEZELITE_SPEAKER_SWITCH" || true
+    amixer -q -c "$NQ_SQUEEZELITE_MIXER_CARD" cset name="Speaker Volume" "$speaker_volume" || true
+    amixer -q -c "$NQ_SQUEEZELITE_MIXER_CARD" cset name="Master Volume" "$NQ_SQUEEZELITE_MASTER_VOLUME" || true
+fi
+
+if [ "$NQ_SQUEEZELITE_RESTART" != "1" ]; then
+    if [ -s "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
+        echo "[nq-squeezelite] already running pid=$(cat "$PID")"
+        exit 0
+    fi
+    if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+        echo "[nq-squeezelite] already running"
+        exit 0
+    fi
+else
+    killall squeezelite 2>/dev/null || true
+    pkill -x squeezelite 2>/dev/null || true
+    sleep 1
+fi
 
 set -- squeezelite \
     -n "$NQ_SQUEEZELITE_NAME" \

@@ -81,6 +81,8 @@ NQ_SQUEEZELITE_ENABLE=1
 NQ_SQUEEZELITE_NAME='Nexus Q'
 NQ_SQUEEZELITE_OUTPUT=hw:0,0
 NQ_SQUEEZELITE_RATES=48000
+NQ_SQUEEZELITE_MASTER_VOLUME=190
+NQ_SQUEEZELITE_SPEAKER_VOLUME=204
 # Optional if SlimProto discovery does not work:
 # NQ_SQUEEZELITE_SERVER=192.168.1.20:3483
 EOF
@@ -97,6 +99,9 @@ Check the player:
 /sbin/nq-player-status
 cat /run/nexusq-squeezelite.log
 ```
+
+The TAS5713 volume controls use raw ALSA values. The default
+`NQ_SQUEEZELITE_MASTER_VOLUME=190` is about `-8.5 dB`; `207` is roughly 0 dB.
 
 See [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md) for the porting rationale and
 Music Assistant setup notes.
