@@ -188,7 +188,7 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +
 +	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
 +				  SND_SOC_DAIFMT_NB_NF |
-+				  SND_SOC_DAIFMT_CBS_CFS);
++				  SND_SOC_DAIFMT_BP_FP);
 +	if (ret)
 +		return ret;
 +
@@ -216,7 +216,7 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +
 +	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
 +				  SND_SOC_DAIFMT_NB_NF |
-+				  SND_SOC_DAIFMT_CBS_CFS);
++				  SND_SOC_DAIFMT_BC_FC);
 +	if (ret && ret != -ENOTSUPP)
 +		return ret;
 +
@@ -242,7 +242,7 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +	.stream_name = "TAS5713",
 +	.dai_fmt = SND_SOC_DAIFMT_I2S |
 +		   SND_SOC_DAIFMT_NB_NF |
-+		   SND_SOC_DAIFMT_CBS_CFS,
++		   SND_SOC_DAIFMT_CBC_CFC,
 +	.ops = &steelhead_tas5713_ops,
 +	SND_SOC_DAILINK_REG(steelhead_tas5713),
 +};
