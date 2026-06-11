@@ -103,6 +103,19 @@ cat /run/nexusq-squeezelite.log
 The TAS5713 volume controls use raw ALSA values. The default
 `NQ_SQUEEZELITE_MASTER_VOLUME=190` is about `-8.5 dB`; `207` is roughly 0 dB.
 
+## Local MP3 Test
+
+The appliance image includes `mpg123` and OpenSSH SFTP server support, so modern
+`scp` can copy files through the default Dropbear SSH server:
+
+```sh
+scp test.mp3 root@192.168.86.38:/root/test.mp3
+ssh root@192.168.86.38 'mpg123 -o alsa -a hw:0,0 /root/test.mp3'
+```
+
+For direct playback, wait a few seconds after stopping Music Assistant playback
+so Squeezelite can release the ALSA device.
+
 See [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md) for the porting rationale and
 Music Assistant setup notes.
 

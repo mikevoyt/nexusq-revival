@@ -26,7 +26,9 @@ image failed with `remote: 'data too large'`.
 - `systemd`, `systemd-sysv`, `udev`, and `dbus`.
 - USB/network tools: `iproute2`, `ifupdown`, `isc-dhcp-client`, `netbase`.
 - Debug access: `dropbear-bin`, `busybox-static`.
-- Audio tools: `alsa-utils`, `alsa-ucm-conf`.
+- Debug/transfer access: `dropbear-bin`, `busybox-static`,
+  `openssh-client`, `openssh-sftp-server`.
+- Audio tools: `alsa-utils`, `alsa-ucm-conf`, `mpg123`.
 - Music Assistant endpoint prep: `squeezelite`.
 - Wi-Fi prep: `wpasupplicant`, `wireless-regdb`, `firmware-brcm80211`.
 
@@ -63,9 +65,12 @@ restarts Dropbear for key-only SSH. Squeezelite starts only when an opt-in
 
 Because this builder extracts `.deb` archives without running maintainer
 scripts, it writes minimal `/etc/passwd`, `/etc/group`, and `/etc/shadow`
-entries for root. The root shadow entry uses a random unknown SHA-512 password
-hash generated at build time; Dropbear is still launched with password logins
-disabled.
+entries and then populates Debian's standard base-passwd users/groups. The
+root shadow entry uses a random unknown SHA-512 password hash generated at build
+time; Dropbear is still launched with password logins disabled. The builder also
+preserves package `Provides` metadata, writes the CA certificate bundle needed
+for HTTPS apt, and creates a few basic alternatives such as `/usr/bin/awk` and
+`/usr/bin/mpg123` that package maintainer scripts would normally install.
 
 ## Fastboot partition facts
 

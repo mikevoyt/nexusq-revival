@@ -22,6 +22,9 @@ EXTRA_PACKAGES = {
     "ca-certificates",
     "busybox-static",
     "dropbear-bin",
+    "mpg123",
+    "openssh-client",
+    "openssh-sftp-server",
     "iproute2",
     "ifupdown",
     "isc-dhcp-client",
@@ -206,7 +209,7 @@ def extract_deb(deb, rootfs):
 def write_text(path, content, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
-    path.chmod(mode)
+    set_owner_mode(path, mode)
 
 
 def random_password_hash():
@@ -219,6 +222,25 @@ def random_password_hash():
         capture_output=True,
     )
     return proc.stdout.strip()
+
+
+def maybe_reexec_under_fakeroot():
+    if os.environ.get("FAKEROOTKEY") or os.environ.get("NQ_NO_FAKEROOT"):
+        return
+    fakeroot = shutil.which("fakeroot")
+    if not fakeroot:
+        print("warning: fakeroot not found; rootfs image may inherit host file owners")
+        return
+    os.execv(fakeroot, [fakeroot, sys.executable, *sys.argv])
+
+
+def set_owner_mode(path, mode=None, uid=0, gid=0):
+    try:
+        os.chown(path, uid, gid)
+    except PermissionError:
+        pass
+    if mode is not None:
+        path.chmod(mode)
 
 
 def configure_rootfs(root, rootfs):
@@ -1136,7 +1158,7 @@ Runtime-only test files in /run/nexusq override these persistent files.
     ):
         if src.exists():
             shutil.copy2(src, dest)
-            dest.chmod(0o755)
+            set_owner_mode(dest, 0o755)
 
     firmware = rootfs / "lib/firmware"
     for name in ("regulatory.db", "regulatory.db.p7s"):
@@ -1148,6 +1170,92 @@ Runtime-only test files in /run/nexusq override these persistent files.
             if src.exists():
                 dest.symlink_to(src.name)
                 break
+
+
+def configure_base_accounts(rootfs):
+    passwd_master = rootfs / "usr/share/base-passwd/passwd.master"
+    group_master = rootfs / "usr/share/base-passwd/group.master"
+    if not passwd_master.exists() or not group_master.exists():
+        return
+
+    group_path = rootfs / "etc/group"
+    groups = group_path.read_text().splitlines()
+    existing_groups = {line.split(":", 1)[0] for line in groups if line and not line.startswith("#")}
+    for line in group_master.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name = line.split(":", 1)[0]
+        if name not in existing_groups:
+            groups.append(line)
+            existing_groups.add(name)
+    write_text(group_path, "\n".join(groups) + "\n")
+
+    passwd_path = rootfs / "etc/passwd"
+    shadow_path = rootfs / "etc/shadow"
+    passwd = passwd_path.read_text().splitlines()
+    shadow = shadow_path.read_text().splitlines()
+    existing_users = {line.split(":", 1)[0] for line in passwd if line and not line.startswith("#")}
+    existing_shadow = {line.split(":", 1)[0] for line in shadow if line and not line.startswith("#")}
+    for line in passwd_master.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(":")
+        name = parts[0]
+        if name not in existing_users:
+            parts[1] = "x"
+            passwd.append(":".join(parts))
+            existing_users.add(name)
+        if name not in existing_shadow:
+            shadow.append(f"{name}:*:19723:0:99999:7:::")
+            existing_shadow.add(name)
+    write_text(passwd_path, "\n".join(passwd) + "\n")
+    write_text(shadow_path, "\n".join(shadow) + "\n", 0o600)
+
+
+def configure_ca_certificates(rootfs):
+    cert_root = rootfs / "usr/share/ca-certificates"
+    certs = sorted(cert_root.rglob("*.crt")) if cert_root.exists() else []
+    if not certs:
+        return
+
+    rels = [cert.relative_to(cert_root).as_posix() for cert in certs]
+    write_text(rootfs / "etc/ca-certificates.conf", "\n".join(rels) + "\n")
+
+    bundle = rootfs / "etc/ssl/certs/ca-certificates.crt"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    with bundle.open("wb") as out:
+        for cert in certs:
+            data = cert.read_bytes()
+            out.write(data)
+            if not data.endswith(b"\n"):
+                out.write(b"\n")
+    set_owner_mode(bundle, 0o644)
+
+
+def configure_standard_modes(rootfs):
+    for path in (rootfs / "tmp", rootfs / "var/tmp"):
+        path.mkdir(parents=True, exist_ok=True)
+        set_owner_mode(path, 0o1777)
+    for path in (rootfs / "run", rootfs / "var", rootfs / "var/lib"):
+        if path.exists():
+            set_owner_mode(path, path.stat().st_mode & 0o7777)
+
+
+def ensure_relative_symlink(rootfs, link, target):
+    path = rootfs / link
+    target_path = path.parent / target
+    if not target_path.exists():
+        return
+    if path.exists() or path.is_symlink():
+        path.unlink()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+
+
+def configure_basic_alternatives(rootfs):
+    ensure_relative_symlink(rootfs, "usr/bin/awk", "gawk")
+    ensure_relative_symlink(rootfs, "usr/bin/mpg123", "mpg123.bin")
+    ensure_relative_symlink(rootfs, "usr/bin/mp3-decoder", "mpg123.bin")
 
 
 def write_dpkg_status(rootfs, packages, selected):
@@ -1166,6 +1274,7 @@ def write_dpkg_status(rootfs, packages, selected):
         "Maintainer",
         "Architecture",
         "Version",
+        "Provides",
         "Pre-Depends",
         "Depends",
         "Recommends",
@@ -1213,6 +1322,8 @@ def make_ext4(rootfs, image, size_mb):
 
 
 def main():
+    maybe_reexec_under_fakeroot()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=Path.cwd(), type=Path)
     parser.add_argument("--size-mb", default=768, type=int)
@@ -1263,6 +1374,10 @@ def main():
         extract_deb(deb, rootfs)
 
     configure_rootfs(root, rootfs)
+    configure_base_accounts(rootfs)
+    configure_ca_certificates(rootfs)
+    configure_standard_modes(rootfs)
+    configure_basic_alternatives(rootfs)
     write_dpkg_status(rootfs, packages, selected)
 
     manifest = work / "packages.txt"
