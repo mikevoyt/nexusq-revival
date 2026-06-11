@@ -807,3 +807,24 @@ spike.
   - Current status: kernel/codec state now matches the legacy profile much
     more closely, but subjective tone quality still needs listener
     confirmation.
+- TAS5713 speaker-quality follow-up, later on June 10, 2026:
+  - User listening still reported `./play-test-tone` sounded like a fluttery
+    square wave after the init-table/MCLK image.
+  - Ported more of Google's old TAS5713 power sequencing into the Steelhead
+    codec path: assert `PDN` and `RESET`, wait 2 ms, enable MCLK, deassert
+    `PDN`, wait 100 us, deassert `RESET`, wait 13.5 ms, trim the oscillator,
+    wait 50 ms, apply the raw init table, explicitly exit shutdown, and use
+    the legacy TAS5713 shutdown-transition delay.
+  - Built and RAM-booted:
+    `artifacts/nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian-taspwr.img`.
+  - Live boot checks showed `0x02=0x00`, `0x05=0x00`, `0x03=0x80`,
+    `0x04=0x03`, `0x0e=0x91`, `0x10=0x02`, `0x1a=0x0f`, and `0x1c=0x07`.
+  - Added a diagnostic command-line override,
+    `nq.audio_inversion=nb-nf|nb-if|ib-nf|ib-if`, to sweep McBSP/TAS5713
+    DAI inversion without rebuilding the kernel for each mode.
+  - Built diagnostic boot images:
+    `artifacts/nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian-taspwr-inv-nb-nf.img`,
+    `...-nb-if.img`, `...-ib-nf.img`, and `...-ib-if.img`.
+  - Booted all four modes and played `/root/nq-tone-normal.wav` for listener
+    comparison. Kernel-visible playback stayed healthy; subjective winner is
+    still pending listener feedback.

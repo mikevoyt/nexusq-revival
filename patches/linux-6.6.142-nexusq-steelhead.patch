@@ -1,6 +1,5 @@
-diff -urN a/drivers/clk/ti/composite.c b/drivers/clk/ti/composite.c
 --- a/drivers/clk/ti/composite.c	2026-06-01 08:43:16
-+++ b/drivers/clk/ti/composite.c	2026-06-08 08:38:57
++++ b/drivers/clk/ti/composite.c	2026-06-07 11:03:10
 @@ -29,13 +29,13 @@
  static long ti_composite_round_rate(struct clk_hw *hw, unsigned long rate,
  				    unsigned long *prate)
@@ -17,9 +16,8 @@ diff -urN a/drivers/clk/ti/composite.c b/drivers/clk/ti/composite.c
  }
  
  static const struct clk_ops ti_composite_divider_ops = {
-diff -urN a/sound/soc/ti/Kconfig b/sound/soc/ti/Kconfig
 --- a/sound/soc/ti/Kconfig	2026-06-01 08:43:16
-+++ b/sound/soc/ti/Kconfig	2026-06-08 08:38:57
++++ b/sound/soc/ti/Kconfig	2026-06-07 10:45:59
 @@ -123,6 +123,16 @@
  	  - PandaBoardES (4460)
  	  - OMAP5 uEVM
@@ -42,9 +40,8 @@ diff -urN a/sound/soc/ti/Kconfig b/sound/soc/ti/Kconfig
  	  Processor Board and Infotainment expansion board.
  endmenu
 -
-diff -urN a/sound/soc/ti/Makefile b/sound/soc/ti/Makefile
 --- a/sound/soc/ti/Makefile	2026-06-01 08:43:16
-+++ b/sound/soc/ti/Makefile	2026-06-08 08:38:57
++++ b/sound/soc/ti/Makefile	2026-06-07 10:45:59
 @@ -29,6 +29,7 @@
  snd-soc-omap3pandora-objs := omap3pandora.o
  snd-soc-omap-twl4030-objs := omap-twl4030.o
@@ -61,19 +58,20 @@ diff -urN a/sound/soc/ti/Makefile b/sound/soc/ti/Makefile
  obj-$(CONFIG_SND_SOC_OMAP_AMS_DELTA) += snd-soc-ams-delta.o
  obj-$(CONFIG_SND_SOC_OMAP_HDMI) += snd-soc-omap-hdmi.o
  obj-$(CONFIG_SND_SOC_OMAP_OSK5912) += snd-soc-osk5912.o
-diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 --- a/sound/soc/ti/steelhead-tas5713.c	1969-12-31 16:00:00
-+++ b/sound/soc/ti/steelhead-tas5713.c	2026-06-08 08:38:57
-@@ -0,0 +1,310 @@
++++ b/sound/soc/ti/steelhead-tas5713.c	2026-06-10 21:50:28
+@@ -0,0 +1,348 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ASoC machine driver for the Google Nexus Q / Steelhead TAS5713 speaker path.
 + */
 +
 +#include <linux/clk.h>
++#include <linux/init.h>
 +#include <linux/module.h>
 +#include <linux/of.h>
 +#include <linux/platform_device.h>
++#include <linux/string.h>
 +
 +#include <sound/pcm_params.h>
 +#include <sound/soc.h>
@@ -82,6 +80,37 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +
 +#define STEELHEAD_TAS5713_MCLK_FS	256
 +#define STEELHEAD_TAS5713_BCLK_FS	32
++
++static unsigned int steelhead_tas5713_dai_inversion = SND_SOC_DAIFMT_NB_NF;
++static const char *steelhead_tas5713_dai_inversion_name = "nb-nf";
++
++static int __init steelhead_tas5713_audio_inversion_setup(char *str)
++{
++	if (!strcmp(str, "nb-nf")) {
++		steelhead_tas5713_dai_inversion = SND_SOC_DAIFMT_NB_NF;
++		steelhead_tas5713_dai_inversion_name = "nb-nf";
++	} else if (!strcmp(str, "nb-if")) {
++		steelhead_tas5713_dai_inversion = SND_SOC_DAIFMT_NB_IF;
++		steelhead_tas5713_dai_inversion_name = "nb-if";
++	} else if (!strcmp(str, "ib-nf")) {
++		steelhead_tas5713_dai_inversion = SND_SOC_DAIFMT_IB_NF;
++		steelhead_tas5713_dai_inversion_name = "ib-nf";
++	} else if (!strcmp(str, "ib-if")) {
++		steelhead_tas5713_dai_inversion = SND_SOC_DAIFMT_IB_IF;
++		steelhead_tas5713_dai_inversion_name = "ib-if";
++	} else {
++		pr_warn("steelhead-tas5713: ignoring unknown nq.audio_inversion=%s\n",
++			str);
++	}
++
++	return 1;
++}
++__setup("nq.audio_inversion=", steelhead_tas5713_audio_inversion_setup);
++
++static unsigned int steelhead_tas5713_dai_fmt(unsigned int provider)
++{
++	return SND_SOC_DAIFMT_I2S | steelhead_tas5713_dai_inversion | provider;
++}
 +
 +struct steelhead_tas5713 {
 +	struct snd_soc_card card;
@@ -186,9 +215,9 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +				 mclk_rate, params_rate(params));
 +	}
 +
-+	ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
-+				  SND_SOC_DAIFMT_NB_NF |
-+				  SND_SOC_DAIFMT_BP_FP);
++	ret = snd_soc_dai_set_fmt(cpu_dai,
++				  steelhead_tas5713_dai_fmt(
++					  SND_SOC_DAIFMT_BP_FP));
 +	if (ret)
 +		return ret;
 +
@@ -214,9 +243,9 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +	if (ret)
 +		return ret;
 +
-+	ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S |
-+				  SND_SOC_DAIFMT_NB_NF |
-+				  SND_SOC_DAIFMT_BC_FC);
++	ret = snd_soc_dai_set_fmt(codec_dai,
++				  steelhead_tas5713_dai_fmt(
++					  SND_SOC_DAIFMT_BC_FC));
 +	if (ret && ret != -ENOTSUPP)
 +		return ret;
 +
@@ -277,6 +306,8 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +	steelhead_tas5713_link.cpus->of_node = cpu_np;
 +	steelhead_tas5713_link.platforms->of_node = cpu_np;
 +	steelhead_tas5713_link.codecs->of_node = codec_np;
++	steelhead_tas5713_link.dai_fmt =
++		steelhead_tas5713_dai_fmt(SND_SOC_DAIFMT_CBC_CFC);
 +
 +	priv->codec_mclk = devm_clk_get_optional(dev, "codec-mclk");
 +	if (IS_ERR(priv->codec_mclk))
@@ -348,6 +379,9 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +
 +	snd_soc_card_set_drvdata(card, priv);
 +
++	dev_info(dev, "using DAI inversion %s\n",
++		 steelhead_tas5713_dai_inversion_name);
++
 +	ret = devm_snd_soc_register_card(dev, card);
 +	if (ret)
 +		return dev_err_probe(dev, ret, "failed to register card\n");
@@ -375,12 +409,14 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +MODULE_DESCRIPTION("Google Nexus Q / Steelhead TAS5713 ASoC machine driver");
 +MODULE_AUTHOR("Google, Inc.; Nexus Q revival contributors");
 +MODULE_LICENSE("GPL");
---- a/sound/soc/codecs/tas571x.c
-+++ b/sound/soc/codecs/tas571x.c
-@@ -40,8 +40,19 @@
+--- a/sound/soc/codecs/tas571x.c	2026-06-01 08:43:16
++++ b/sound/soc/codecs/tas571x.c	2026-06-10 21:35:41
+@@ -40,8 +40,27 @@
  	int				num_controls;
  	const struct regmap_config	*regmap_config;
  	int				vol_reg_size;
++	bool				legacy_power_sequence;
++	unsigned int			shutdown_delay_us;
 +	const struct tas571x_raw_init	*init_sequence;
 +	unsigned int			num_init_sequence;
  };
@@ -394,10 +430,16 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +	{ .data = (const uint8_t[]){ __VA_ARGS__ }, \
 +	  .len = sizeof((const uint8_t[]){ __VA_ARGS__ }) }
 +
++#define TAS571X_STEELHEAD_SHUTDOWN_DELAY_US	(1000 + (13 * 12570))
++#define TAS571X_STEELHEAD_PDN_ASSERT_DELAY_US	2000
++#define TAS571X_STEELHEAD_POST_PDN_DELAY_US	100
++#define TAS571X_STEELHEAD_POST_RESET_DELAY_US	13500
++#define TAS571X_STEELHEAD_POST_TRIM_DELAY_US	50000
++
  struct tas571x_private {
  	const struct tas571x_chip	*chip;
  	struct regmap			*regmap;
-@@ -215,6 +226,25 @@
+@@ -215,6 +234,97 @@
  	return ret;
  }
  
@@ -420,10 +462,103 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +	return 0;
 +}
 +
++static int tas571x_legacy_power_up(struct tas571x_private *priv,
++				   struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	unsigned int dev_id;
++	bool mclk_enabled = false;
++	int ret;
++
++	if (priv->pdn_gpio)
++		gpiod_set_value(priv->pdn_gpio, 1);
++	if (priv->reset_gpio)
++		gpiod_set_value(priv->reset_gpio, 1);
++	usleep_range(TAS571X_STEELHEAD_PDN_ASSERT_DELAY_US,
++		     TAS571X_STEELHEAD_PDN_ASSERT_DELAY_US + 1000);
++
++	if (!IS_ERR(priv->mclk)) {
++		ret = clk_prepare_enable(priv->mclk);
++		if (ret) {
++			dev_err(dev, "Failed to enable master clock: %d\n", ret);
++			return ret;
++		}
++		mclk_enabled = true;
++	}
++
++	if (priv->pdn_gpio)
++		gpiod_set_value(priv->pdn_gpio, 0);
++	usleep_range(TAS571X_STEELHEAD_POST_PDN_DELAY_US,
++		     TAS571X_STEELHEAD_POST_PDN_DELAY_US + 100);
++
++	if (priv->reset_gpio)
++		gpiod_set_value(priv->reset_gpio, 0);
++	usleep_range(TAS571X_STEELHEAD_POST_RESET_DELAY_US,
++		     TAS571X_STEELHEAD_POST_RESET_DELAY_US + 6500);
++
++	ret = regmap_read(priv->regmap, TAS571X_DEV_ID_REG, &dev_id);
++	if (ret) {
++		dev_err(dev, "Failed to read device ID after reset: %d\n", ret);
++		goto disable_mclk;
++	}
++
++	ret = regmap_write(priv->regmap, TAS571X_OSC_TRIM_REG, 0);
++	if (ret) {
++		dev_err(dev, "Failed to trim oscillator: %d\n", ret);
++		goto disable_mclk;
++	}
++
++	usleep_range(TAS571X_STEELHEAD_POST_TRIM_DELAY_US,
++		     TAS571X_STEELHEAD_POST_TRIM_DELAY_US + 10000);
++
++	ret = tas571x_apply_raw_init(client, priv->chip->init_sequence,
++				     priv->chip->num_init_sequence);
++	if (ret) {
++		dev_err(dev, "Failed to apply init sequence: %d\n", ret);
++		goto disable_mclk;
++	}
++
++	ret = regmap_write(priv->regmap, TAS571X_SYS_CTRL_2_REG, 0);
++	if (ret) {
++		dev_err(dev, "Failed to exit shutdown: %d\n", ret);
++		goto disable_mclk;
++	}
++
++	usleep_range(priv->chip->shutdown_delay_us,
++		     priv->chip->shutdown_delay_us + 1000);
++
++disable_mclk:
++	if (mclk_enabled)
++		clk_disable_unprepare(priv->mclk);
++
++	return ret;
++}
++
  /*
   * Integer array controls for setting biquad, mixer, DRC coefficients.
   * According to the datasheet each coefficient is effectively 26bits,
-@@ -444,6 +474,99 @@
+@@ -304,6 +414,8 @@
+ static int tas571x_mute(struct snd_soc_dai *dai, int mute, int direction)
+ {
+ 	struct snd_soc_component *component = dai->component;
++	struct tas571x_private *priv = snd_soc_component_get_drvdata(component);
++	unsigned int delay_us = priv->chip->shutdown_delay_us;
+ 	u8 sysctl2;
+ 	int ret;
+ 
+@@ -313,7 +425,10 @@
+ 			    TAS571X_SYS_CTRL_2_REG,
+ 		     TAS571X_SYS_CTRL_2_SDN_MASK,
+ 		     sysctl2);
+-	usleep_range(1000, 2000);
++	if (delay_us)
++		usleep_range(delay_us, delay_us + 1000);
++	else
++		usleep_range(1000, 2000);
+ 
+ 	return ret;
+ }
+@@ -444,6 +559,101 @@
  	.vol_reg_size			= 1,
  };
  
@@ -516,6 +651,8 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
 +	.num_controls			= ARRAY_SIZE(tas5711_controls),
 +	.regmap_config			= &tas5711_regmap_config,
 +	.vol_reg_size			= 1,
++	.legacy_power_sequence		= true,
++	.shutdown_delay_us		= TAS571X_STEELHEAD_SHUTDOWN_DELAY_US,
 +	.init_sequence			= steelhead_tas5713_init_sequence,
 +	.num_init_sequence		= ARRAY_SIZE(steelhead_tas5713_init_sequence),
 +};
@@ -523,52 +660,81 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
  static const struct regmap_range tas5707_volatile_regs_range[] = {
  	regmap_reg_range(TAS571X_CLK_CTRL_REG,  TAS571X_ERR_STATUS_REG),
  	regmap_reg_range(TAS571X_OSC_TRIM_REG,  TAS571X_OSC_TRIM_REG),
-@@ -837,6 +960,7 @@
+@@ -837,6 +1047,8 @@
  	struct tas571x_private *priv;
  	struct device *dev = &client->dev;
  	const struct of_device_id *of_id;
 +	bool init_mclk_enabled = false;
++	enum gpiod_flags pdn_flags;
  	int i, ret;
  
  	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
-@@ -907,12 +1031,35 @@
+@@ -885,7 +1097,9 @@
+ 		goto disable_regs;
+ 	}
+ 
+-	priv->pdn_gpio = devm_gpiod_get_optional(dev, "pdn", GPIOD_OUT_LOW);
++	pdn_flags = priv->chip->legacy_power_sequence ? GPIOD_OUT_HIGH :
++						       GPIOD_OUT_LOW;
++	priv->pdn_gpio = devm_gpiod_get_optional(dev, "pdn", pdn_flags);
+ 	if (IS_ERR(priv->pdn_gpio)) {
+ 		dev_err(dev, "error requesting pdn_gpio: %ld\n",
+ 			PTR_ERR(priv->pdn_gpio));
+@@ -900,19 +1114,48 @@
+ 			PTR_ERR(priv->reset_gpio));
+ 		ret = PTR_ERR(priv->reset_gpio);
+ 		goto disable_regs;
+-	} else if (priv->reset_gpio) {
++	} else if (priv->reset_gpio && !priv->chip->legacy_power_sequence) {
+ 		/* pulse the active low reset line for ~100us */
+ 		usleep_range(100, 200);
+ 		gpiod_set_value(priv->reset_gpio, 0);
  		usleep_range(13500, 20000);
  	}
  
-+	if (priv->chip->init_sequence && !IS_ERR(priv->mclk)) {
-+		ret = clk_prepare_enable(priv->mclk);
-+		if (ret) {
-+			dev_err(dev, "Failed to enable master clock: %d\n", ret);
-+			goto disable_regs;
-+		}
-+		init_mclk_enabled = true;
-+	}
-+
- 	ret = regmap_write(priv->regmap, TAS571X_OSC_TRIM_REG, 0);
- 	if (ret)
+-	ret = regmap_write(priv->regmap, TAS571X_OSC_TRIM_REG, 0);
+-	if (ret)
 -		goto disable_regs;
-+		goto disable_init_mclk;
- 
- 	usleep_range(50000, 60000);
- 
-+	if (priv->chip->init_sequence) {
-+		ret = tas571x_apply_raw_init(client, priv->chip->init_sequence,
-+					     priv->chip->num_init_sequence);
-+		if (ret) {
-+			dev_err(dev, "Failed to apply init sequence: %d\n", ret);
-+			goto disable_init_mclk;
++	if (priv->chip->legacy_power_sequence) {
++		ret = tas571x_legacy_power_up(priv, client);
++		if (ret)
++			goto disable_regs;
++	} else {
++		if (priv->chip->init_sequence && !IS_ERR(priv->mclk)) {
++			ret = clk_prepare_enable(priv->mclk);
++			if (ret) {
++				dev_err(dev, "Failed to enable master clock: %d\n", ret);
++				goto disable_regs;
++			}
++			init_mclk_enabled = true;
 +		}
-+	}
+ 
+-	usleep_range(50000, 60000);
++		ret = regmap_write(priv->regmap, TAS571X_OSC_TRIM_REG, 0);
++		if (ret)
++			goto disable_init_mclk;
+ 
++		usleep_range(50000, 60000);
 +
-+	if (init_mclk_enabled) {
-+		clk_disable_unprepare(priv->mclk);
-+		init_mclk_enabled = false;
++		if (priv->chip->init_sequence) {
++			ret = tas571x_apply_raw_init(client, priv->chip->init_sequence,
++						     priv->chip->num_init_sequence);
++			if (ret) {
++				dev_err(dev, "Failed to apply init sequence: %d\n", ret);
++				goto disable_init_mclk;
++			}
++		}
++
++		if (init_mclk_enabled) {
++			clk_disable_unprepare(priv->mclk);
++			init_mclk_enabled = false;
++		}
 +	}
 +
  	memcpy(&priv->component_driver, &tas571x_component, sizeof(priv->component_driver));
  	priv->component_driver.controls = priv->chip->controls;
  	priv->component_driver.num_controls = priv->chip->num_controls;
-@@ -936,6 +1083,9 @@
+@@ -936,6 +1179,9 @@
  
  	return ret;
  
@@ -578,7 +744,7 @@ diff -urN a/sound/soc/ti/steelhead-tas5713.c b/sound/soc/ti/steelhead-tas5713.c
  disable_regs:
  	regulator_bulk_disable(priv->chip->num_supply_names, priv->supplies);
  	return ret;
-@@ -949,6 +1099,7 @@
+@@ -949,6 +1195,7 @@
  }
  
  static const struct of_device_id tas571x_of_match[] __maybe_unused = {
