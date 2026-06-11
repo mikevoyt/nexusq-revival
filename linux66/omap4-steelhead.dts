@@ -227,7 +227,7 @@
 	status = "okay";
 
 	tas5713: audio-codec@1b {
-		compatible = "ti,tas5711";
+		compatible = "google,steelhead-tas5713-codec", "ti,tas5711";
 		reg = <0x1b>;
 		#sound-dai-cells = <0>;
 

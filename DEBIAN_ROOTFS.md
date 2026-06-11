@@ -32,9 +32,11 @@ image failed with `remote: 'data too large'`.
 - Music Assistant endpoint prep: `squeezelite`.
 - Wi-Fi prep: `wpasupplicant`, `wireless-regdb`, `firmware-brcm80211`.
 
-The current Linux 6.6 no-SMP kernel spike has validated TAS5713 ALSA from the
-Debian rootfs on `userdata`. `aplay -l` reports `Steelhead TAS5713`, and
-`speaker-test` opened `hw:0,0` at 48 kHz stereo.
+The current Linux 6.6 no-SMP kernel spike exposes TAS5713 ALSA from the Debian
+rootfs on `userdata`. `aplay -l` reports `Steelhead TAS5713`, and
+`speaker-test` opens `hw:0,0` at 48 kHz stereo. Subjective speaker quality is
+still being tuned; the public kernel patch now carries the legacy Google
+TAS5713 init table and applies it with MCLK enabled.
 
 The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
 
@@ -111,9 +113,10 @@ Implications:
   firmware/NVRAM via `.secrets/nexusq-firmware`. Keep that fragment for local
   debugging only. The public release uses
   `linux66/nexusq-linux66-wifi-public.fragment` and does not embed those files.
-- The current Steelhead TAS5713 audio path is validated at 48 kHz/S16 stereo.
-  Plain 44.1 kHz playback cannot be clocked by the current 6.6 patch; use
-  `nq-play` or Squeezelite's `-r 48000` configuration so userspace resamples.
+- The current Steelhead TAS5713 audio path opens at 48 kHz/S16 stereo. Plain
+  44.1 kHz playback cannot be clocked by the current 6.6 patch; use `nq-play`
+  or Squeezelite's `-r 48000` configuration so userspace resamples. Speaker
+  tone quality is still under active bring-up.
 
 ## Secret Handling
 
@@ -208,5 +211,5 @@ The next safe live path is:
    - `artifacts/nexusq-debian-trixie-armhf-rootfs.sparse.img`
 2. Keep using `fastboot boot` for the kernel image until longer soak tests
    justify flashing `boot`.
-3. Start the audio-streamer phase on top of the validated Debian/Wi-Fi/SSH/ALSA
-   base.
+3. Finish subjective TAS5713 speaker-quality validation before relying on the
+   onboard amplifier for the audio-streamer phase.

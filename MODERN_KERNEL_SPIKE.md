@@ -603,9 +603,11 @@ spike.
     blocker; Debian `aplay` is the better validation tool.
 - Current audio conclusion:
   - 6.6 no-SMP boot, TAS5713 card registration, original-style MCLK rates, and
-    PCM playback are viable.
-  - Next kernel work should clean up the local machine driver and then move to
-    SDIO/Wi-Fi discovery.
+    PCM open/playback are viable.
+  - Subjective speaker quality was later found to need more work; a sine tone
+    could sound harsh or square-like even when ALSA returned success.
+  - Next kernel work should keep tightening the TAS5713 codec/McBSP bring-up
+    before treating the onboard amplifier as audio-quality validated.
 - Linux 6.6 Wi-Fi discovery:
   - Extracted the original Android `/system` Wi-Fi board files from eMMC
     partition `mmcblk0p11` into ignored local storage:
@@ -762,7 +764,8 @@ spike.
   - Added `patches/linux-6.6.142-nexusq-steelhead.patch` and updated
     `tools/build_linux66_omap2plus_local.sh` to apply it automatically to a
     clean Linux 6.6.142 source tree. The patch carries the Steelhead TAS5713
-    ASoC machine driver and the TI composite clock divider fix.
+    ASoC machine driver, the TI composite clock divider fix, and the
+    Steelhead-specific TAS5713 codec init profile.
   - Public artifacts built:
     - `artifacts/nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img`
     - `artifacts/nexusq-debian-trixie-armhf-rootfs.ext4`
@@ -778,3 +781,29 @@ spike.
     - `speaker-test -D hw:0,0 -c 2 -r 48000 -t sine -f 1000 -l 1` opened
       the speaker PCM path.
     - The runner returned the unit to fastboot.
+- TAS5713 speaker-quality follow-up on June 10, 2026:
+  - User listening reported the generated tones sounded harsh/square-like, so
+    the audio result is no longer considered quality-validated solely because
+    `speaker-test` opens the PCM.
+  - Compared the modern upstream `tas571x` codec path with Google's old
+    `tas5713_reg_init.h` table.
+  - Added a Steelhead codec compatible,
+    `google,steelhead-tas5713-codec`, and ported Google's TAS5713 init table:
+    serial interface, PWM mux, input mux, channel mixes, output pre/post scale,
+    high-pass biquads, DRC coefficients, volume config, interchannel delays,
+    and backend-error behavior.
+  - Matched the old power-up sequence more closely by enabling TAS5713 MCLK
+    while applying oscillator trim and the raw init table.
+  - Built and RAM-booted:
+    `artifacts/nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian-tasinit-mclk.img`.
+  - Live register checks confirmed key TAS5713 values:
+    `0x03=0x80`, `0x04=0x03`, `0x0e=0x91`, `0x10=0x02`,
+    `0x1a=0x0f`, `0x1c=0x07`; multi-byte reads confirmed the PWM mux,
+    input mux, high-pass biquads, output scaling, and channel mixer values.
+  - During active 48 kHz/S16 playback, TAS5713 error status stayed clear
+    (`0x02=0x00`) and shutdown was deasserted (`0x05=0x00`).
+  - Low-gain test command:
+    `speaker-test -D hw:0,0 -c 2 -r 48000 -F S16_LE -t sine -f 440 -l 1`.
+  - Current status: kernel/codec state now matches the legacy profile much
+    more closely, but subjective tone quality still needs listener
+    confirmation.
