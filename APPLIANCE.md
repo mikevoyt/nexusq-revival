@@ -110,11 +110,15 @@ The appliance image includes `mpg123` and OpenSSH SFTP server support, so modern
 
 ```sh
 scp test.mp3 root@192.168.86.38:/root/test.mp3
-ssh root@192.168.86.38 'mpg123 -o alsa -a hw:0,0 /root/test.mp3'
+ssh root@192.168.86.38 'nq-play /root/test.mp3'
 ```
 
-For direct playback, wait a few seconds after stopping Music Assistant playback
-so Squeezelite can release the ALSA device.
+Use `nq-play` instead of plain `mpg123` for local tests. The current TAS5713
+kernel path is validated at 48 kHz/S16 stereo, while many MP3s are 44.1 kHz.
+`nq-play` forces `mpg123` to resample to 48 kHz, selects `hw:0,0`, applies the
+same audible mixer defaults as Squeezelite, and uses a larger ALSA buffer to
+avoid short writes. For direct playback, wait a few seconds after stopping Music
+Assistant playback so Squeezelite can release the ALSA device.
 
 See [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md) for the porting rationale and
 Music Assistant setup notes.

@@ -990,6 +990,64 @@ exit 1
         0o755,
     )
     write_text(
+        rootfs / "usr/bin/nq-play",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+usage() {
+    echo "usage: nq-play FILE_OR_URL..." >&2
+}
+
+if [ "$#" -eq 0 ]; then
+    usage
+    exit 2
+fi
+
+: "${NQ_PLAY_MIXER_CARD:=0}"
+: "${NQ_PLAY_MASTER_VOLUME:=190}"
+: "${NQ_PLAY_SPEAKER_VOLUME:=204}"
+: "${NQ_PLAY_SPEAKER_SWITCH:=on}"
+: "${NQ_PLAY_OUTPUT:=hw:0,0}"
+: "${NQ_PLAY_RATE:=48000}"
+: "${NQ_PLAY_ENCODING:=s16}"
+: "${NQ_PLAY_DEVBUFFER:=0.5}"
+: "${NQ_PLAY_BUFFER:=1024}"
+: "${NQ_PLAY_PRELOAD:=1}"
+
+if ! command -v mpg123 >/dev/null 2>&1; then
+    echo "nq-play: mpg123 is not installed" >&2
+    exit 1
+fi
+
+if command -v amixer >/dev/null 2>&1; then
+    speaker_volume="$NQ_PLAY_SPEAKER_VOLUME"
+    case "$speaker_volume" in
+        *,*) ;;
+        *) speaker_volume="$speaker_volume,$speaker_volume" ;;
+    esac
+
+    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Switch" "$NQ_PLAY_SPEAKER_SWITCH" || true
+    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Volume" "$speaker_volume" || true
+    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Master Volume" "$NQ_PLAY_MASTER_VOLUME" || true
+fi
+
+exec mpg123 \\
+    --no-control \\
+    -o alsa \\
+    -a "$NQ_PLAY_OUTPUT" \\
+    -r "$NQ_PLAY_RATE" \\
+    --resample fine \\
+    -e "$NQ_PLAY_ENCODING" \\
+    --devbuffer "$NQ_PLAY_DEVBUFFER" \\
+    --buffer "$NQ_PLAY_BUFFER" \\
+    --preload "$NQ_PLAY_PRELOAD" \\
+    "$@"
+""",
+        0o755,
+    )
+    write_text(
         rootfs / "sbin/nq-player-status",
         """#!/bin/sh
 

@@ -52,16 +52,18 @@ The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
 The rootfs also includes `/sbin/nq-prepare-wifi-firmware`,
 `/sbin/nq-load-wifi`, `/sbin/nq-start-network`,
 `/sbin/nq-start-squeezelite`, `/sbin/nq-player-status`,
-`/sbin/nq-provision`, and `/sbin/nq-appliance-status`. The public Wi-Fi path
-prepares Debian `brcmfmac4330-sdio.bin`, copies Steelhead BCM4330 NVRAM
-calibration from the stock Android `system` partition when available, loads the
-modular Broadcom driver, accepts runtime-only Wi-Fi and SSH files in
-`/run/nexusq/` or `/tmp/`, accepts persistent device-local config in
+`/sbin/nq-provision`, `/sbin/nq-appliance-status`, and `/usr/bin/nq-play`. The
+public Wi-Fi path prepares Debian `brcmfmac4330-sdio.bin`, copies Steelhead
+BCM4330 NVRAM calibration from the stock Android `system` partition when
+available, loads the modular Broadcom driver, accepts runtime-only Wi-Fi and SSH
+files in `/run/nexusq/` or `/tmp/`, accepts persistent device-local config in
 `/etc/nexusq/`, seeds early boot entropy when `/tmp/rng.seed` or
 `/var/lib/nexusq/rng.seed` exists, starts `wpa_supplicant`, obtains DHCP with
 BusyBox `udhcpc`, installs an injected or persistent `authorized_keys`, and
 restarts Dropbear for key-only SSH. Squeezelite starts only when an opt-in
-`squeezelite.env` enables it.
+`squeezelite.env` enables it. `nq-play` is a local MP3 test wrapper around
+`mpg123` that forces 48 kHz/S16 stereo output on `hw:0,0`, applies audible mixer
+defaults, and uses conservative ALSA buffering.
 
 Because this builder extracts `.deb` archives without running maintainer
 scripts, it writes minimal `/etc/passwd`, `/etc/group`, and `/etc/shadow`
@@ -109,6 +111,9 @@ Implications:
   firmware/NVRAM via `.secrets/nexusq-firmware`. Keep that fragment for local
   debugging only. The public release uses
   `linux66/nexusq-linux66-wifi-public.fragment` and does not embed those files.
+- The current Steelhead TAS5713 audio path is validated at 48 kHz/S16 stereo.
+  Plain 44.1 kHz playback cannot be clocked by the current 6.6 patch; use
+  `nq-play` or Squeezelite's `-r 48000` configuration so userspace resamples.
 
 ## Secret Handling
 
