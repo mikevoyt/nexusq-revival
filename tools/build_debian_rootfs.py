@@ -747,6 +747,115 @@ exit 1
         0o755,
     )
     write_text(
+        rootfs / "sbin/nq-load-audio",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+log() {
+    echo "[nq-load-audio] $*"
+}
+
+if grep -q 'Steelhead TAS5713' /proc/asound/cards 2>/dev/null; then
+    log "Steelhead TAS5713 already registered"
+    exit 0
+fi
+
+krel="$(uname -r)"
+mods="/lib/modules/$krel"
+
+if [ -d "$mods" ] && command -v depmod >/dev/null 2>&1; then
+    depmod -a "$krel" 2>/dev/null || true
+fi
+
+if command -v modprobe >/dev/null 2>&1; then
+    modprobe snd_soc_ti_sdma \\
+        nq_period_bytes=4128 \\
+        nq_periods=4 2>/dev/null || true
+    modprobe snd_soc_omap_mcbsp \\
+        nq_legacy_element=1 \\
+        nq_legacy_threshold_frame=1 \\
+        nq_legacy_pm_runtime_hold=1 \\
+        nq_no_rx_err_irq=1 \\
+        nq_legacy_tx_irq=1 \\
+        nq_pio_tone_ms=0 \\
+        nq_fifo_poll_ms=0 2>/dev/null || true
+    modprobe snd_soc_tas571x \\
+        nq_dump_regs=0 \\
+        nq_legacy_stream_reinit=1 \\
+        nq_mute_on_trigger=-1 \\
+        nq_async_legacy_stream_reinit_ms=0 \\
+        nq_cycle_mclk_on_legacy_reset=1 \\
+        nq_skip_hw_params=1 \\
+        nq_sdi_override=-1 \\
+        nq_err_poll_ms=0 2>/dev/null || true
+    modprobe snd_soc_steelhead_tas5713 \\
+        nq_audio_dump=0 \\
+        nq_audio_format=i2s \\
+        nq_audio_inversion=nb-nf \\
+        nq_legacy_s16_only=1 \\
+        nq_codec_power_first=0 \\
+        nq_codec_mclk_startup=0 \\
+        nq_mcbsp_clk_startup=0 \\
+        nq_mcbsp_clk_hw_params=1 \\
+        nq_skip_codec_fmt=1 2>/dev/null || true
+fi
+
+if ! grep -q 'Steelhead TAS5713' /proc/asound/cards 2>/dev/null && command -v insmod >/dev/null 2>&1; then
+    audio_base="$mods/kernel/sound/soc"
+    insmod "$audio_base/ti/snd-soc-ti-sdma.ko" \\
+        nq_period_bytes=4128 \\
+        nq_periods=4 2>/dev/null || true
+    insmod "$audio_base/ti/snd-soc-omap-mcbsp.ko" \\
+        nq_legacy_element=1 \\
+        nq_legacy_threshold_frame=1 \\
+        nq_legacy_pm_runtime_hold=1 \\
+        nq_no_rx_err_irq=1 \\
+        nq_legacy_tx_irq=1 \\
+        nq_pio_tone_ms=0 \\
+        nq_fifo_poll_ms=0 2>/dev/null || true
+    insmod "$audio_base/codecs/snd-soc-tas571x.ko" \\
+        nq_dump_regs=0 \\
+        nq_legacy_stream_reinit=1 \\
+        nq_mute_on_trigger=-1 \\
+        nq_async_legacy_stream_reinit_ms=0 \\
+        nq_cycle_mclk_on_legacy_reset=1 \\
+        nq_skip_hw_params=1 \\
+        nq_sdi_override=-1 \\
+        nq_err_poll_ms=0 2>/dev/null || true
+    insmod "$audio_base/ti/snd-soc-steelhead-tas5713.ko" \\
+        nq_audio_dump=0 \\
+        nq_audio_format=i2s \\
+        nq_audio_inversion=nb-nf \\
+        nq_legacy_s16_only=1 \\
+        nq_codec_power_first=0 \\
+        nq_codec_mclk_startup=0 \\
+        nq_mcbsp_clk_startup=0 \\
+        nq_mcbsp_clk_hw_params=1 \\
+        nq_skip_codec_fmt=1 2>/dev/null || true
+fi
+
+i=0
+while [ "$i" -lt 10 ]; do
+    if grep -q 'Steelhead TAS5713' /proc/asound/cards 2>/dev/null; then
+        log "Steelhead TAS5713 ready"
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+log "Steelhead TAS5713 did not appear"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "etc/modules-load.d/nexusq-audio.conf",
+        "# Loaded by /sbin/nq-load-audio so module parameters are applied.\n",
+    )
+    write_text(
         rootfs / "sbin/nq-start-network",
         """#!/bin/sh
 
@@ -1153,7 +1262,47 @@ start_usb_shell() {
 configure_usb_gadget
 start_usb_shell
 
-autoreboot="$(tr ' ' '\\n' </proc/cmdline 2>/dev/null | sed -n 's/^nq.autoreboot=//p' | head -n 1)"
+cmdline_value() {
+    key="$1"
+    tr ' ' '\\n' </proc/cmdline 2>/dev/null | sed -n "s/^${key}=//p" | head -n 1
+}
+
+start_watchdog_feeder() {
+    timeout="$(cmdline_value nq.watchdog)"
+    case "$timeout" in
+        ""|*[!0-9]*) return ;;
+    esac
+    [ "$timeout" -gt 0 ] 2>/dev/null || return
+
+    for n in 1 2 3 4 5 6 7 8 9 10; do
+        [ -e /dev/watchdog ] && break
+        sleep 1
+    done
+    [ -e /dev/watchdog ] || return
+
+    if [ -w /sys/class/watchdog/watchdog0/timeout ]; then
+        echo "$timeout" >/sys/class/watchdog/watchdog0/timeout 2>/dev/null || true
+    fi
+    if [ -w /sys/class/watchdog/watchdog0/nowayout ]; then
+        echo 1 >/sys/class/watchdog/watchdog0/nowayout 2>/dev/null || true
+    fi
+
+    interval=$((timeout / 3))
+    [ "$interval" -ge 5 ] || interval=5
+    (
+        exec 3>/dev/watchdog || exit 0
+        echo "nq watchdog feeder active timeout=${timeout}s interval=${interval}s" >/dev/console 2>/dev/null || true
+        while true; do
+            echo 1 >&3
+            sleep "$interval"
+        done
+    ) &
+    echo "$!" >/run/nq-watchdog.pid
+}
+
+start_watchdog_feeder
+
+autoreboot="$(cmdline_value nq.autoreboot)"
 case "$autoreboot" in
     ""|*[!0-9]*) autoreboot=300 ;;
 esac
@@ -1173,6 +1322,10 @@ ip addr add 172.16.42.2/24 dev usb0 2>/dev/null || true
 
 if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.conf ] || [ -s /tmp/wpa_supplicant.conf ]; then
     /sbin/nq-start-network
+fi
+
+if [ -x /sbin/nq-load-audio ]; then
+    /sbin/nq-load-audio || true
 fi
 
 if [ -x /sbin/nq-start-squeezelite ]; then

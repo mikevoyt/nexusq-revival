@@ -48,6 +48,8 @@
 	sound_tas5713: sound-tas5713 {
 		compatible = "google,steelhead-tas5713";
 		ti,model = "Steelhead TAS5713";
+		pinctrl-names = "default";
+		pinctrl-0 = <&tas5713_mclk_pins>;
 		google,mcbsp = <&mcbsp2>;
 		google,audio-codec = <&tas5713>;
 		clocks = <&auxclk1_ck>,
@@ -76,7 +78,7 @@
 		pinctrl-single,pins = <
 			OMAP4_IOPAD(0x0f6, PIN_OUTPUT | MUX_MODE0)		/* abe_mcbsp2_clkx */
 			OMAP4_IOPAD(0x0f8, PIN_INPUT_PULLDOWN | MUX_MODE0)	/* abe_mcbsp2_dr */
-			OMAP4_IOPAD(0x0fa, PIN_OUTPUT_PULLDOWN | MUX_MODE0)	/* abe_mcbsp2_dx */
+			OMAP4_IOPAD(0x0fa, PIN_OUTPUT | MUX_MODE0)		/* abe_mcbsp2_dx */
 			OMAP4_IOPAD(0x0fc, PIN_OUTPUT | MUX_MODE0)		/* abe_mcbsp2_fsx */
 		>;
 	};
@@ -141,8 +143,6 @@
 &auxclk1_ck {
 	assigned-clocks = <&auxclk1_ck>;
 	assigned-clock-rates = <12288000>;
-	pinctrl-names = "default";
-	pinctrl-0 = <&tas5713_mclk_pins>;
 };
 
 &vaux1 {

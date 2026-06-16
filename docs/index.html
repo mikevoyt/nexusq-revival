@@ -20,7 +20,7 @@
     <div class="hero__content">
       <p class="eyebrow">Google Nexus Q / Steelhead</p>
       <h1>Nexus Q Revival</h1>
-      <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, and TAS5713 audio.</p>
+      <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, and TAS5713 speaker playback.</p>
       <div class="hero__actions">
         <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases">Download v0.1.0</a>
         <a class="button" href="https://github.com/mikevoyt/nexusq-revival/blob/main/FLASHING.md">Flash Guide</a>
@@ -65,7 +65,7 @@
           <article class="status-card">
             <span>Audio</span>
             <strong>TAS5713 ALSA</strong>
-            <p>48 kHz stereo PCM opens on hw:0,0.</p>
+            <p>48 kHz PCM and MP3 playback validated on the internal speaker path.</p>
           </article>
         </div>
       </div>
@@ -79,7 +79,7 @@
         </div>
         <ul class="check-list">
           <li>Ported a Steelhead device tree for OMAP4, TAS5713, McBSP2, USB gadget, and BCM4330 SDIO.</li>
-          <li>Added a Linux 6.6 ASoC machine driver for the internal speaker amplifier path.</li>
+          <li>Added a Linux 6.6 ASoC machine driver and Steelhead ABE clock quirk for the internal speaker amplifier path.</li>
           <li>Built a Debian loader and minimal rootfs init with USB serial, auto-fastboot recovery, Wi-Fi startup, and Dropbear.</li>
           <li>Moved public Wi-Fi from embedded private blobs to modular `brcmfmac` plus first-boot calibration extraction.</li>
           <li>Staged an opt-in Squeezelite endpoint so Music Assistant can treat the Q as a native network player.</li>

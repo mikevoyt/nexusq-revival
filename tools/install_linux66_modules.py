@@ -6,6 +6,11 @@ from pathlib import Path
 
 
 MODULE_PATTERNS = (
+    "drivers/dma/ti/omap-dma.ko",
+    "sound/soc/codecs/snd-soc-tas571x.ko",
+    "sound/soc/ti/snd-soc-ti-sdma.ko",
+    "sound/soc/ti/snd-soc-omap-mcbsp.ko",
+    "sound/soc/ti/snd-soc-steelhead-tas5713.ko",
     "drivers/net/wireless/broadcom/brcm80211/**/*.ko",
 )
 
@@ -49,7 +54,7 @@ def copy_modules(build_dir, rootfs, release):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Install Nexus Q Linux 6.6 Wi-Fi modules into the Debian rootfs."
+        description="Install Nexus Q Linux 6.6 audio and Wi-Fi modules into the Debian rootfs."
     )
     parser.add_argument("--build-dir", required=True, type=Path)
     parser.add_argument("--rootfs", required=True, type=Path)

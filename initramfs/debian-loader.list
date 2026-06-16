@@ -16,6 +16,7 @@ slink /bin/sleep /bin/busybox 777 0 0
 slink /bin/sed /bin/busybox 777 0 0
 slink /bin/tr /bin/busybox 777 0 0
 slink /bin/head /bin/busybox 777 0 0
+slink /sbin/insmod /bin/busybox 777 0 0
 slink /sbin/reboot /bin/busybox 777 0 0
 nod /dev/console 600 0 0 c 5 1
 nod /dev/null 666 0 0 c 1 3

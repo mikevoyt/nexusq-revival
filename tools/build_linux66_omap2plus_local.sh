@@ -2,7 +2,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-SRC="$ROOT/kernel/linux-6.6.142"
+SRC="${SRC:-$ROOT/kernel/linux-6.6.142}"
 OUT="${OUT:-$ROOT/build/linux-6.6-omap2plus-steelhead}"
 IMAGE="${IMAGE:-$ROOT/artifacts/nexusq-linux66-omap2plus-rd830-autoreboot.img}"
 ZIMAGE_DTB="${ZIMAGE_DTB:-$ROOT/artifacts/linux66-omap2plus-steelhead-zImage-dtb}"
@@ -38,7 +38,7 @@ CMDLINE="${CMDLINE:-console=ttyO2,115200n8 earlyprintk ignore_loglevel root=/dev
 
 KERNEL_PATCH="$ROOT/patches/linux-6.6.142-nexusq-steelhead.patch"
 if [ -f "$KERNEL_PATCH" ] && [ ! -f "$SRC/sound/soc/ti/steelhead-tas5713.c" ]; then
-	patch -d "$SRC" -p1 < "$KERNEL_PATCH"
+	patch -d "$SRC" -p2 < "$KERNEL_PATCH"
 fi
 
 mkdir -p "$ROOT/tools/host/include"
@@ -76,18 +76,28 @@ mkdir -p "$OUT" "$ROOT/artifacts"
 	-j"$JOBS" zImage "$DTB_TARGET"
 
 if [ "${BUILD_MODULES:-0}" = "1" ]; then
-	if [ -n "${BUILD_MODULES_M:-}" ]; then
+	if [ -n "${BUILD_MODULES_TARGETS:-}" ]; then
+		"$MAKE" -C "$SRC" O="$OUT" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+			HOSTCFLAGS="$HOSTCFLAGS_LOCAL" \
+			-j"$JOBS" $BUILD_MODULES_TARGETS
+	elif [ -n "${BUILD_MODULES_M:-}" ]; then
 		if [ ! -s "$OUT/Module.symvers" ] && [ -s "$OUT/vmlinux.symvers" ]; then
 			cp "$OUT/vmlinux.symvers" "$OUT/Module.symvers"
 		fi
-		"$MAKE" -C "$SRC" O="$OUT" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
-			HOSTCFLAGS="$HOSTCFLAGS_LOCAL" \
-			-j"$JOBS" M="$BUILD_MODULES_M" modules
+		for module_dir in $BUILD_MODULES_M; do
+			"$MAKE" -C "$SRC" O="$OUT" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+				HOSTCFLAGS="$HOSTCFLAGS_LOCAL" \
+				-j"$JOBS" M="$module_dir" modules
+		done
 	else
 		"$MAKE" -C "$SRC" O="$OUT" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
 			HOSTCFLAGS="$HOSTCFLAGS_LOCAL" \
 			-j"$JOBS" modules
 	fi
+fi
+
+if [ -n "${POST_MODULES_SCRIPT:-}" ]; then
+	ROOT="$ROOT" SRC="$SRC" OUT="$OUT" "$POST_MODULES_SCRIPT"
 fi
 
 cat "$OUT/arch/arm/boot/zImage" "$OUT/$DTB_REL" > "$ZIMAGE_DTB"
