@@ -15,6 +15,7 @@ file /sbin/hotplug initramfs/hotplug 755 0 0
 file /bin/busybox third_party/busybox-armv7l 755 0 0
 file /bin/tinyplay artifacts/bin/tinyplay 755 0 0
 file /bin/nqstreamd artifacts/bin/nqstreamd 755 0 0
+file /bin/nq-tas5713-volume artifacts/nq-tas5713-volume-ioctl-armel 755 0 0
 file /bin/reboot-bootloader artifacts/bin/reboot-bootloader 755 0 0
 file /bin/nq-autoreboot-cancel initramfs/nq-autoreboot-cancel 755 0 0
 file /bin/nq-autoreboot-status initramfs/nq-autoreboot-status 755 0 0

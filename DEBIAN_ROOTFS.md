@@ -26,12 +26,17 @@ image failed with `remote: 'data too large'`.
 - `systemd`, `systemd-sysv`, `udev`, and `dbus`.
 - USB/network tools: `iproute2`, `ifupdown`, `isc-dhcp-client`, `netbase`.
 - Debug access: `dropbear-bin`, `busybox-static`.
-- Audio tools: `alsa-utils`, `alsa-ucm-conf`.
+- Debug/transfer access: `dropbear-bin`, `busybox-static`,
+  `openssh-client`, `openssh-sftp-server`.
+- Audio tools: `alsa-utils`, `alsa-ucm-conf`, `mpg123`.
+- Music Assistant endpoint prep: `squeezelite`.
 - Wi-Fi prep: `wpasupplicant`, `wireless-regdb`, `firmware-brcm80211`.
 
-The current Linux 6.6 no-SMP kernel spike has validated TAS5713 ALSA from the
-Debian rootfs on `userdata`. `aplay -l` reports `Steelhead TAS5713`, and
-`speaker-test` opened `hw:0,0` at 48 kHz stereo.
+The current Linux 6.6 no-SMP kernel spike exposes TAS5713 ALSA from the Debian
+rootfs on `userdata`. `aplay -l` reports `Steelhead TAS5713`, and
+`speaker-test` opens `hw:0,0` at 48 kHz stereo. Subjective speaker quality is
+still being tuned; the public kernel patch now carries the legacy Google
+TAS5713 init table and applies it with MCLK enabled.
 
 The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
 
@@ -47,22 +52,29 @@ The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
 - drops to `/bin/sh`.
 
 The rootfs also includes `/sbin/nq-prepare-wifi-firmware`,
-`/sbin/nq-load-wifi`, `/sbin/nq-start-network`, `/sbin/nq-provision`, and
-`/sbin/nq-appliance-status`. The public Wi-Fi path
-prepares Debian `brcmfmac4330-sdio.bin`, copies Steelhead BCM4330 NVRAM
-calibration from the stock Android `system` partition when available, loads the
-modular Broadcom driver, accepts runtime-only Wi-Fi and SSH files in
-`/run/nexusq/` or `/tmp/`, accepts persistent device-local config in
+`/sbin/nq-load-wifi`, `/sbin/nq-start-network`,
+`/sbin/nq-start-squeezelite`, `/sbin/nq-player-status`,
+`/sbin/nq-provision`, `/sbin/nq-appliance-status`, and `/usr/bin/nq-play`. The
+public Wi-Fi path prepares Debian `brcmfmac4330-sdio.bin`, copies Steelhead
+BCM4330 NVRAM calibration from the stock Android `system` partition when
+available, loads the modular Broadcom driver, accepts runtime-only Wi-Fi and SSH
+files in `/run/nexusq/` or `/tmp/`, accepts persistent device-local config in
 `/etc/nexusq/`, seeds early boot entropy when `/tmp/rng.seed` or
 `/var/lib/nexusq/rng.seed` exists, starts `wpa_supplicant`, obtains DHCP with
 BusyBox `udhcpc`, installs an injected or persistent `authorized_keys`, and
-restarts Dropbear for key-only SSH.
+restarts Dropbear for key-only SSH. Squeezelite starts only when an opt-in
+`squeezelite.env` enables it. `nq-play` is a local MP3 test wrapper around
+`mpg123` that forces 48 kHz/S16 stereo output on `hw:0,0`, applies audible mixer
+defaults, and uses conservative ALSA buffering.
 
 Because this builder extracts `.deb` archives without running maintainer
 scripts, it writes minimal `/etc/passwd`, `/etc/group`, and `/etc/shadow`
-entries for root. The root shadow entry uses a random unknown SHA-512 password
-hash generated at build time; Dropbear is still launched with password logins
-disabled.
+entries and then populates Debian's standard base-passwd users/groups. The
+root shadow entry uses a random unknown SHA-512 password hash generated at build
+time; Dropbear is still launched with password logins disabled. The builder also
+preserves package `Provides` metadata, writes the CA certificate bundle needed
+for HTTPS apt, and creates a few basic alternatives such as `/usr/bin/awk` and
+`/usr/bin/mpg123` that package maintainer scripts would normally install.
 
 ## Fastboot partition facts
 
@@ -101,6 +113,10 @@ Implications:
   firmware/NVRAM via `.secrets/nexusq-firmware`. Keep that fragment for local
   debugging only. The public release uses
   `linux66/nexusq-linux66-wifi-public.fragment` and does not embed those files.
+- The current Steelhead TAS5713 audio path opens at 48 kHz/S16 stereo. Plain
+  44.1 kHz playback cannot be clocked by the current 6.6 patch; use `nq-play`
+  or Squeezelite's `-r 48000` configuration so userspace resamples. Speaker
+  tone quality is still under active bring-up.
 
 ## Secret Handling
 
@@ -128,7 +144,9 @@ The Debian rootfs runner, `tools/run_debian_serial_test.py`, uses the same
 secret handling model. It can flash the sparse rootfs to `userdata`, RAM-boot
 the loader image, upload Wi-Fi config, upload an SSH public key, start
 `/sbin/nq-start-network`, verify SSH, and then ask the device to return to
-fastboot. It does not write credentials into the shareable rootfs image.
+fastboot. It can also upload and start a non-secret Squeezelite config with
+`--enable-squeezelite`. It does not write credentials into the shareable rootfs
+image.
 
 ## Live Test Results
 
@@ -193,5 +211,5 @@ The next safe live path is:
    - `artifacts/nexusq-debian-trixie-armhf-rootfs.sparse.img`
 2. Keep using `fastboot boot` for the kernel image until longer soak tests
    justify flashing `boot`.
-3. Start the audio-streamer phase on top of the validated Debian/Wi-Fi/SSH/ALSA
-   base.
+3. Finish subjective TAS5713 speaker-quality validation before relying on the
+   onboard amplifier for the audio-streamer phase.

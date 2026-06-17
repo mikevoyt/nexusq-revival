@@ -8,7 +8,7 @@ network audio target. The current public release boots Debian 13.5 armhf from
 
 ## Current Status
 
-Validated on real Nexus Q hardware on June 8, 2026:
+Validated on real Nexus Q hardware in June 2026:
 
 - Linux 6.6.142 no-SMP boots from `fastboot boot`.
 - Debian 13.5 armhf runs from a sparse ext4 image flashed to `userdata`.
@@ -17,7 +17,9 @@ Validated on real Nexus Q hardware on June 8, 2026:
   copied from the device's stock Android `system` partition.
 - Dropbear SSH accepts injected root public-key auth over Wi-Fi.
 - ALSA exposes `card 0: TAS5713 [Steelhead TAS5713]`.
-- `speaker-test` opens `hw:0,0` at 48 kHz stereo.
+- The internal TAS5713 speaker path plays 48 kHz stereo PCM and MP3 on Linux
+  6.6 after the Steelhead ABE DPLL clock-parent fix.
+- Opt-in Squeezelite endpoint support is staged for Music Assistant playback.
 - The boot image arms an automatic return-to-fastboot timer for safer testing.
 
 Still experimental:
@@ -25,8 +27,10 @@ Still experimental:
 - The release is intended for `fastboot boot`, not permanent daily-driver boot
   flashing yet.
 - Full systemd service bring-up is not the default init path.
-- HDMI, S/PDIF, LEDs, top ring controls, and a real streaming protocol are not
-  finished.
+- HDMI, S/PDIF, LEDs, top ring controls, and hardware volume integration are
+  not finished.
+- TAS5713 speaker validation has focused on one wired speaker so far; full
+  stereo/channel-routing validation is still pending.
 - Wi-Fi depends on calibration from an existing stock `system` partition, or a
   user-supplied Broadcom NVRAM text file.
 
@@ -52,7 +56,8 @@ The v0.1.0 release assets are:
 
 - `nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img`
   - fastboot boot image
-  - Linux 6.6.142, no-SMP, USB ACM+ECM, TAS5713 audio, modular BCM4330 Wi-Fi
+  - Linux 6.6.142, no-SMP, USB ACM+ECM, TAS5713 speaker playback, modular
+    BCM4330 Wi-Fi
 - `nexusq-debian-trixie-armhf-rootfs.sparse.img`
   - Android sparse image for `fastboot flash userdata`
   - Debian 13.5 armhf rootfs
@@ -81,6 +86,8 @@ fastboot after about three minutes unless cancelled from the serial shell:
 Detailed instructions are in [FLASHING.md](FLASHING.md).
 Persistent Wi-Fi/SSH provisioning for appliance-style use is documented in
 [APPLIANCE.md](APPLIANCE.md).
+Music Assistant player endpoint setup is documented in
+[MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md).
 
 ## Build
 

@@ -22,6 +22,9 @@ EXTRA_PACKAGES = {
     "ca-certificates",
     "busybox-static",
     "dropbear-bin",
+    "mpg123",
+    "openssh-client",
+    "openssh-sftp-server",
     "iproute2",
     "ifupdown",
     "isc-dhcp-client",
@@ -35,6 +38,7 @@ EXTRA_PACKAGES = {
     "dbus",
     "alsa-utils",
     "alsa-ucm-conf",
+    "squeezelite",
     "wpasupplicant",
     "wireless-regdb",
     "firmware-brcm80211",
@@ -205,7 +209,7 @@ def extract_deb(deb, rootfs):
 def write_text(path, content, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
-    path.chmod(mode)
+    set_owner_mode(path, mode)
 
 
 def random_password_hash():
@@ -218,6 +222,25 @@ def random_password_hash():
         capture_output=True,
     )
     return proc.stdout.strip()
+
+
+def maybe_reexec_under_fakeroot():
+    if os.environ.get("FAKEROOTKEY") or os.environ.get("NQ_NO_FAKEROOT"):
+        return
+    fakeroot = shutil.which("fakeroot")
+    if not fakeroot:
+        print("warning: fakeroot not found; rootfs image may inherit host file owners")
+        return
+    os.execv(fakeroot, [fakeroot, sys.executable, *sys.argv])
+
+
+def set_owner_mode(path, mode=None, uid=0, gid=0):
+    try:
+        os.chown(path, uid, gid)
+    except PermissionError:
+        pass
+    if mode is not None:
+        path.chmod(mode)
 
 
 def configure_rootfs(root, rootfs):
@@ -374,6 +397,12 @@ else
     echo "rng: persistent seed missing"
 fi
 
+if [ -s /etc/nexusq/squeezelite.env ]; then
+    echo "squeezelite: persistent config present"
+else
+    echo "squeezelite: persistent config missing"
+fi
+
 /sbin/nq-autoreboot-status 2>/dev/null || true
 
 if [ -e /sys/class/net/wlan0 ]; then
@@ -386,6 +415,12 @@ if pgrep -x dropbear >/dev/null 2>&1 || pidof dropbear >/dev/null 2>&1; then
     echo "ssh: dropbear running"
 else
     echo "ssh: dropbear not running"
+fi
+
+if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+    echo "squeezelite: running"
+else
+    echo "squeezelite: not running"
 fi
 """,
         0o755,
@@ -401,6 +436,7 @@ CONFIG_DIR=/etc/nexusq
 STATE_DIR=/var/lib/nexusq
 WPA_DEST="$CONFIG_DIR/wpa_supplicant.conf"
 AUTH_DEST="$CONFIG_DIR/authorized_keys"
+SQUEEZELITE_DEST="$CONFIG_DIR/squeezelite.env"
 RNG_DEST="$STATE_DIR/rng.seed"
 
 usage() {
@@ -412,12 +448,15 @@ Persist appliance provisioning files into the Debian rootfs.
 Options:
   --wifi PATH              Copy PATH to /etc/nexusq/wpa_supplicant.conf
   --authorized-keys PATH   Copy PATH to /etc/nexusq/authorized_keys
+  --squeezelite PATH       Copy PATH to /etc/nexusq/squeezelite.env
   --rng-seed PATH          Copy PATH to /var/lib/nexusq/rng.seed
   --clear-wifi             Remove persistent Wi-Fi config
   --clear-authorized-keys  Remove persistent SSH authorized_keys
+  --clear-squeezelite      Remove persistent Squeezelite config
   --clear-rng-seed         Remove persistent RNG seed
   --cancel-autoreboot      Cancel the current safety return-to-fastboot timer
   --start-network          Start or restart Wi-Fi, DHCP, and Dropbear
+  --start-squeezelite      Start or restart the Music Assistant player endpoint
   --status                 Print appliance status after changes
   -h, --help               Show this help
 USAGE
@@ -446,12 +485,15 @@ copy_secret() {
 
 wifi_src=
 auth_src=
+squeezelite_src=
 rng_src=
 clear_wifi=0
 clear_auth=0
+clear_squeezelite=0
 clear_rng=0
 cancel_autoreboot=0
 start_network=0
+start_squeezelite=0
 show_status=0
 
 while [ "$#" -gt 0 ]; do
@@ -464,6 +506,11 @@ while [ "$#" -gt 0 ]; do
         --authorized-keys)
             [ "$#" -ge 2 ] || die "--authorized-keys requires a path"
             auth_src="$2"
+            shift 2
+            ;;
+        --squeezelite)
+            [ "$#" -ge 2 ] || die "--squeezelite requires a path"
+            squeezelite_src="$2"
             shift 2
             ;;
         --rng-seed)
@@ -479,6 +526,10 @@ while [ "$#" -gt 0 ]; do
             clear_auth=1
             shift
             ;;
+        --clear-squeezelite)
+            clear_squeezelite=1
+            shift
+            ;;
         --clear-rng-seed)
             clear_rng=1
             shift
@@ -489,6 +540,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --start-network)
             start_network=1
+            shift
+            ;;
+        --start-squeezelite)
+            start_squeezelite=1
             shift
             ;;
         --status)
@@ -510,10 +565,12 @@ chmod 700 "$CONFIG_DIR" "$STATE_DIR" 2>/dev/null || true
 
 [ "$clear_wifi" -eq 0 ] || { rm -f "$WPA_DEST"; echo "removed $WPA_DEST"; }
 [ "$clear_auth" -eq 0 ] || { rm -f "$AUTH_DEST"; echo "removed $AUTH_DEST"; }
+[ "$clear_squeezelite" -eq 0 ] || { rm -f "$SQUEEZELITE_DEST"; echo "removed $SQUEEZELITE_DEST"; }
 [ "$clear_rng" -eq 0 ] || { rm -f "$RNG_DEST"; echo "removed $RNG_DEST"; }
 
 [ -z "$wifi_src" ] || copy_secret "$wifi_src" "$WPA_DEST" 600
 [ -z "$auth_src" ] || copy_secret "$auth_src" "$AUTH_DEST" 600
+[ -z "$squeezelite_src" ] || copy_secret "$squeezelite_src" "$SQUEEZELITE_DEST" 644
 [ -z "$rng_src" ] || copy_secret "$rng_src" "$RNG_DEST" 600
 
 if [ "$cancel_autoreboot" -eq 1 ]; then
@@ -524,7 +581,11 @@ if [ "$start_network" -eq 1 ]; then
     /sbin/nq-start-network
 fi
 
-if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ]; then
+if [ "$start_squeezelite" -eq 1 ]; then
+    /sbin/nq-start-squeezelite
+fi
+
+if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ] || [ "$start_squeezelite" -eq 1 ]; then
     /sbin/nq-appliance-status
 fi
 """,
@@ -686,6 +747,115 @@ exit 1
         0o755,
     )
     write_text(
+        rootfs / "sbin/nq-load-audio",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+log() {
+    echo "[nq-load-audio] $*"
+}
+
+if grep -q 'Steelhead TAS5713' /proc/asound/cards 2>/dev/null; then
+    log "Steelhead TAS5713 already registered"
+    exit 0
+fi
+
+krel="$(uname -r)"
+mods="/lib/modules/$krel"
+
+if [ -d "$mods" ] && command -v depmod >/dev/null 2>&1; then
+    depmod -a "$krel" 2>/dev/null || true
+fi
+
+if command -v modprobe >/dev/null 2>&1; then
+    modprobe snd_soc_ti_sdma \\
+        nq_period_bytes=4128 \\
+        nq_periods=4 2>/dev/null || true
+    modprobe snd_soc_omap_mcbsp \\
+        nq_legacy_element=1 \\
+        nq_legacy_threshold_frame=1 \\
+        nq_legacy_pm_runtime_hold=1 \\
+        nq_no_rx_err_irq=1 \\
+        nq_legacy_tx_irq=1 \\
+        nq_pio_tone_ms=0 \\
+        nq_fifo_poll_ms=0 2>/dev/null || true
+    modprobe snd_soc_tas571x \\
+        nq_dump_regs=0 \\
+        nq_legacy_stream_reinit=1 \\
+        nq_mute_on_trigger=-1 \\
+        nq_async_legacy_stream_reinit_ms=0 \\
+        nq_cycle_mclk_on_legacy_reset=1 \\
+        nq_skip_hw_params=1 \\
+        nq_sdi_override=-1 \\
+        nq_err_poll_ms=0 2>/dev/null || true
+    modprobe snd_soc_steelhead_tas5713 \\
+        nq_audio_dump=0 \\
+        nq_audio_format=i2s \\
+        nq_audio_inversion=nb-nf \\
+        nq_legacy_s16_only=1 \\
+        nq_codec_power_first=0 \\
+        nq_codec_mclk_startup=0 \\
+        nq_mcbsp_clk_startup=0 \\
+        nq_mcbsp_clk_hw_params=1 \\
+        nq_skip_codec_fmt=1 2>/dev/null || true
+fi
+
+if ! grep -q 'Steelhead TAS5713' /proc/asound/cards 2>/dev/null && command -v insmod >/dev/null 2>&1; then
+    audio_base="$mods/kernel/sound/soc"
+    insmod "$audio_base/ti/snd-soc-ti-sdma.ko" \\
+        nq_period_bytes=4128 \\
+        nq_periods=4 2>/dev/null || true
+    insmod "$audio_base/ti/snd-soc-omap-mcbsp.ko" \\
+        nq_legacy_element=1 \\
+        nq_legacy_threshold_frame=1 \\
+        nq_legacy_pm_runtime_hold=1 \\
+        nq_no_rx_err_irq=1 \\
+        nq_legacy_tx_irq=1 \\
+        nq_pio_tone_ms=0 \\
+        nq_fifo_poll_ms=0 2>/dev/null || true
+    insmod "$audio_base/codecs/snd-soc-tas571x.ko" \\
+        nq_dump_regs=0 \\
+        nq_legacy_stream_reinit=1 \\
+        nq_mute_on_trigger=-1 \\
+        nq_async_legacy_stream_reinit_ms=0 \\
+        nq_cycle_mclk_on_legacy_reset=1 \\
+        nq_skip_hw_params=1 \\
+        nq_sdi_override=-1 \\
+        nq_err_poll_ms=0 2>/dev/null || true
+    insmod "$audio_base/ti/snd-soc-steelhead-tas5713.ko" \\
+        nq_audio_dump=0 \\
+        nq_audio_format=i2s \\
+        nq_audio_inversion=nb-nf \\
+        nq_legacy_s16_only=1 \\
+        nq_codec_power_first=0 \\
+        nq_codec_mclk_startup=0 \\
+        nq_mcbsp_clk_startup=0 \\
+        nq_mcbsp_clk_hw_params=1 \\
+        nq_skip_codec_fmt=1 2>/dev/null || true
+fi
+
+i=0
+while [ "$i" -lt 10 ]; do
+    if grep -q 'Steelhead TAS5713' /proc/asound/cards 2>/dev/null; then
+        log "Steelhead TAS5713 ready"
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+log "Steelhead TAS5713 did not appear"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "etc/modules-load.d/nexusq-audio.conf",
+        "# Loaded by /sbin/nq-load-audio so module parameters are applied.\n",
+    )
+    write_text(
         rootfs / "sbin/nq-start-network",
         """#!/bin/sh
 
@@ -734,9 +904,15 @@ fi
 if [ -s "$WPA_CONF" ] && command -v wpa_supplicant >/dev/null 2>&1; then
     killall wpa_supplicant 2>/dev/null || true
     wpa_supplicant -B -i wlan0 -c "$WPA_CONF" -P /run/wpa_supplicant.wlan0.pid
+    wpa_ping() {
+        wpa_cli -p /run/wpa_supplicant -i wlan0 ping 2>/dev/null
+    }
+    wpa_status() {
+        wpa_cli -p /run/wpa_supplicant -i wlan0 status 2>/dev/null
+    }
     i=0
     while [ "$i" -lt 20 ]; do
-        if wpa_cli -i wlan0 ping 2>/dev/null | grep -q PONG; then
+        if wpa_ping | grep -q PONG; then
             break
         fi
         i=$((i + 1))
@@ -745,8 +921,8 @@ if [ -s "$WPA_CONF" ] && command -v wpa_supplicant >/dev/null 2>&1; then
     i=0
     while [ "$i" -lt 40 ]; do
         echo "--- wpa_cli status poll $i ---"
-        wpa_cli -i wlan0 status 2>/dev/null || true
-        if wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; then
+        wpa_status || true
+        if wpa_status | grep -q '^wpa_state=COMPLETED'; then
             break
         fi
         i=$((i + 1))
@@ -799,6 +975,223 @@ if [ -d /var/lib/nexusq ]; then
     ) &
 fi
 echo "[nq-network] done"
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-start-squeezelite",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-squeezelite.log
+PID=/run/nq-squeezelite.pid
+mkdir -p /run /run/nexusq
+: >"$LOG"
+exec >>"$LOG" 2>&1
+
+echo "[nq-squeezelite] starting"
+date 2>/dev/null || true
+
+for env in /etc/nexusq/squeezelite.env /run/nexusq/squeezelite.env /tmp/squeezelite.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_SQUEEZELITE_ENABLE:=0}"
+: "${NQ_SQUEEZELITE_NAME:=Nexus Q}"
+: "${NQ_SQUEEZELITE_OUTPUT:=hw:0,0}"
+: "${NQ_SQUEEZELITE_RATES:=48000}"
+: "${NQ_SQUEEZELITE_CLOSE_TIMEOUT:=5}"
+: "${NQ_SQUEEZELITE_MIXER_CARD:=0}"
+: "${NQ_SQUEEZELITE_MASTER_VOLUME:=190}"
+: "${NQ_SQUEEZELITE_SPEAKER_VOLUME:=204}"
+: "${NQ_SQUEEZELITE_SPEAKER_SWITCH:=on}"
+: "${NQ_SQUEEZELITE_RESTART:=0}"
+
+if [ "$NQ_SQUEEZELITE_ENABLE" != "1" ]; then
+    echo "[nq-squeezelite] disabled; set NQ_SQUEEZELITE_ENABLE=1"
+    exit 0
+fi
+
+if ! command -v squeezelite >/dev/null 2>&1; then
+    echo "[nq-squeezelite] squeezelite command missing"
+    exit 1
+fi
+
+derive_mac() {
+    if [ -n "$NQ_SQUEEZELITE_MAC" ]; then
+        echo "$NQ_SQUEEZELITE_MAC"
+        return
+    fi
+    tr ' ' '\\n' </proc/cmdline 2>/dev/null | sed -n 's/^androidboot.wifi_macaddr=//p' | head -n 1
+    for iface in wlan0 usb0 eth0; do
+        [ -r "/sys/class/net/$iface/address" ] || continue
+        cat "/sys/class/net/$iface/address"
+        return
+    done
+}
+
+mac="$(derive_mac | head -n 1)"
+case "$mac" in
+    [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+        ;;
+    *)
+        mac=
+        ;;
+esac
+
+if command -v amixer >/dev/null 2>&1; then
+    speaker_volume="$NQ_SQUEEZELITE_SPEAKER_VOLUME"
+    case "$speaker_volume" in
+        *,*) ;;
+        *) speaker_volume="$speaker_volume,$speaker_volume" ;;
+    esac
+
+    echo "[nq-squeezelite] setting mixer: card=$NQ_SQUEEZELITE_MIXER_CARD master=$NQ_SQUEEZELITE_MASTER_VOLUME speaker=$speaker_volume switch=$NQ_SQUEEZELITE_SPEAKER_SWITCH"
+    amixer -q -c "$NQ_SQUEEZELITE_MIXER_CARD" cset name="Speaker Switch" "$NQ_SQUEEZELITE_SPEAKER_SWITCH" || true
+    amixer -q -c "$NQ_SQUEEZELITE_MIXER_CARD" cset name="Speaker Volume" "$speaker_volume" || true
+    amixer -q -c "$NQ_SQUEEZELITE_MIXER_CARD" cset name="Master Volume" "$NQ_SQUEEZELITE_MASTER_VOLUME" || true
+fi
+
+if [ "$NQ_SQUEEZELITE_RESTART" != "1" ]; then
+    if [ -s "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
+        echo "[nq-squeezelite] already running pid=$(cat "$PID")"
+        exit 0
+    fi
+    if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+        echo "[nq-squeezelite] already running"
+        exit 0
+    fi
+else
+    killall squeezelite 2>/dev/null || true
+    pkill -x squeezelite 2>/dev/null || true
+    sleep 1
+fi
+
+set -- squeezelite \
+    -n "$NQ_SQUEEZELITE_NAME" \
+    -o "$NQ_SQUEEZELITE_OUTPUT" \
+    -r "$NQ_SQUEEZELITE_RATES" \
+    -C "$NQ_SQUEEZELITE_CLOSE_TIMEOUT" \
+    -f "$LOG"
+
+[ -z "$mac" ] || set -- "$@" -m "$mac"
+[ -z "$NQ_SQUEEZELITE_SERVER" ] || set -- "$@" -s "$NQ_SQUEEZELITE_SERVER"
+[ -z "$NQ_SQUEEZELITE_ALSA_PARAMS" ] || set -- "$@" -a "$NQ_SQUEEZELITE_ALSA_PARAMS"
+[ -z "$NQ_SQUEEZELITE_CODEC_LIST" ] || set -- "$@" -c "$NQ_SQUEEZELITE_CODEC_LIST"
+
+echo "[nq-squeezelite] exec: $*"
+"$@" &
+echo "$!" >"$PID"
+sleep 1
+
+if kill -0 "$(cat "$PID")" 2>/dev/null; then
+    echo "[nq-squeezelite] pid=$(cat "$PID")"
+    exit 0
+fi
+
+echo "[nq-squeezelite] failed to stay running"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr/bin/nq-play",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+usage() {
+    echo "usage: nq-play FILE_OR_URL..." >&2
+}
+
+if [ "$#" -eq 0 ]; then
+    usage
+    exit 2
+fi
+
+: "${NQ_PLAY_MIXER_CARD:=0}"
+: "${NQ_PLAY_MASTER_VOLUME:=190}"
+: "${NQ_PLAY_SPEAKER_VOLUME:=204}"
+: "${NQ_PLAY_SPEAKER_SWITCH:=on}"
+: "${NQ_PLAY_OUTPUT:=hw:0,0}"
+: "${NQ_PLAY_RATE:=48000}"
+: "${NQ_PLAY_ENCODING:=s16}"
+: "${NQ_PLAY_DEVBUFFER:=0.5}"
+: "${NQ_PLAY_BUFFER:=1024}"
+: "${NQ_PLAY_PRELOAD:=1}"
+
+if ! command -v mpg123 >/dev/null 2>&1; then
+    echo "nq-play: mpg123 is not installed" >&2
+    exit 1
+fi
+
+if command -v amixer >/dev/null 2>&1; then
+    speaker_volume="$NQ_PLAY_SPEAKER_VOLUME"
+    case "$speaker_volume" in
+        *,*) ;;
+        *) speaker_volume="$speaker_volume,$speaker_volume" ;;
+    esac
+
+    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Switch" "$NQ_PLAY_SPEAKER_SWITCH" || true
+    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Volume" "$speaker_volume" || true
+    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Master Volume" "$NQ_PLAY_MASTER_VOLUME" || true
+fi
+
+exec mpg123 \\
+    --no-control \\
+    -o alsa \\
+    -a "$NQ_PLAY_OUTPUT" \\
+    -r "$NQ_PLAY_RATE" \\
+    --resample fine \\
+    -e "$NQ_PLAY_ENCODING" \\
+    --devbuffer "$NQ_PLAY_DEVBUFFER" \\
+    --buffer "$NQ_PLAY_BUFFER" \\
+    --preload "$NQ_PLAY_PRELOAD" \\
+    "$@"
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-player-status",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+echo "Nexus Q player status"
+
+if command -v squeezelite >/dev/null 2>&1; then
+    echo "squeezelite: installed"
+else
+    echo "squeezelite: missing"
+fi
+
+if [ -s /etc/nexusq/squeezelite.env ]; then
+    echo "config: /etc/nexusq/squeezelite.env present"
+else
+    echo "config: /etc/nexusq/squeezelite.env missing"
+fi
+
+if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+    echo "squeezelite: running"
+    ps | grep '[s]queezelite' 2>/dev/null || true
+else
+    echo "squeezelite: not running"
+fi
+
+if command -v aplay >/dev/null 2>&1; then
+    aplay -l 2>/dev/null || true
+fi
+
+if [ -s /run/nexusq-squeezelite.log ]; then
+    echo "--- /run/nexusq-squeezelite.log ---"
+    tail -n 80 /run/nexusq-squeezelite.log 2>/dev/null || cat /run/nexusq-squeezelite.log
+fi
 """,
         0o755,
     )
@@ -869,7 +1262,47 @@ start_usb_shell() {
 configure_usb_gadget
 start_usb_shell
 
-autoreboot="$(tr ' ' '\\n' </proc/cmdline 2>/dev/null | sed -n 's/^nq.autoreboot=//p' | head -n 1)"
+cmdline_value() {
+    key="$1"
+    tr ' ' '\\n' </proc/cmdline 2>/dev/null | sed -n "s/^${key}=//p" | head -n 1
+}
+
+start_watchdog_feeder() {
+    timeout="$(cmdline_value nq.watchdog)"
+    case "$timeout" in
+        ""|*[!0-9]*) return ;;
+    esac
+    [ "$timeout" -gt 0 ] 2>/dev/null || return
+
+    for n in 1 2 3 4 5 6 7 8 9 10; do
+        [ -e /dev/watchdog ] && break
+        sleep 1
+    done
+    [ -e /dev/watchdog ] || return
+
+    if [ -w /sys/class/watchdog/watchdog0/timeout ]; then
+        echo "$timeout" >/sys/class/watchdog/watchdog0/timeout 2>/dev/null || true
+    fi
+    if [ -w /sys/class/watchdog/watchdog0/nowayout ]; then
+        echo 1 >/sys/class/watchdog/watchdog0/nowayout 2>/dev/null || true
+    fi
+
+    interval=$((timeout / 3))
+    [ "$interval" -ge 5 ] || interval=5
+    (
+        exec 3>/dev/watchdog || exit 0
+        echo "nq watchdog feeder active timeout=${timeout}s interval=${interval}s" >/dev/console 2>/dev/null || true
+        while true; do
+            echo 1 >&3
+            sleep "$interval"
+        done
+    ) &
+    echo "$!" >/run/nq-watchdog.pid
+}
+
+start_watchdog_feeder
+
+autoreboot="$(cmdline_value nq.autoreboot)"
 case "$autoreboot" in
     ""|*[!0-9]*) autoreboot=300 ;;
 esac
@@ -889,6 +1322,14 @@ ip addr add 172.16.42.2/24 dev usb0 2>/dev/null || true
 
 if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.conf ] || [ -s /tmp/wpa_supplicant.conf ]; then
     /sbin/nq-start-network
+fi
+
+if [ -x /sbin/nq-load-audio ]; then
+    /sbin/nq-load-audio || true
+fi
+
+if [ -x /sbin/nq-start-squeezelite ]; then
+    /sbin/nq-start-squeezelite || true
 fi
 
 if command -v busybox >/dev/null 2>&1; then
@@ -913,6 +1354,7 @@ Do not bake Wi-Fi passwords or private keys into public rootfs images.
 Expected files:
 - /etc/nexusq/wpa_supplicant.conf
 - /etc/nexusq/authorized_keys
+- /etc/nexusq/squeezelite.env
 
 Runtime-only test files in /run/nexusq override these persistent files.
 """,
@@ -927,7 +1369,7 @@ Runtime-only test files in /run/nexusq override these persistent files.
     ):
         if src.exists():
             shutil.copy2(src, dest)
-            dest.chmod(0o755)
+            set_owner_mode(dest, 0o755)
 
     firmware = rootfs / "lib/firmware"
     for name in ("regulatory.db", "regulatory.db.p7s"):
@@ -939,6 +1381,92 @@ Runtime-only test files in /run/nexusq override these persistent files.
             if src.exists():
                 dest.symlink_to(src.name)
                 break
+
+
+def configure_base_accounts(rootfs):
+    passwd_master = rootfs / "usr/share/base-passwd/passwd.master"
+    group_master = rootfs / "usr/share/base-passwd/group.master"
+    if not passwd_master.exists() or not group_master.exists():
+        return
+
+    group_path = rootfs / "etc/group"
+    groups = group_path.read_text().splitlines()
+    existing_groups = {line.split(":", 1)[0] for line in groups if line and not line.startswith("#")}
+    for line in group_master.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name = line.split(":", 1)[0]
+        if name not in existing_groups:
+            groups.append(line)
+            existing_groups.add(name)
+    write_text(group_path, "\n".join(groups) + "\n")
+
+    passwd_path = rootfs / "etc/passwd"
+    shadow_path = rootfs / "etc/shadow"
+    passwd = passwd_path.read_text().splitlines()
+    shadow = shadow_path.read_text().splitlines()
+    existing_users = {line.split(":", 1)[0] for line in passwd if line and not line.startswith("#")}
+    existing_shadow = {line.split(":", 1)[0] for line in shadow if line and not line.startswith("#")}
+    for line in passwd_master.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(":")
+        name = parts[0]
+        if name not in existing_users:
+            parts[1] = "x"
+            passwd.append(":".join(parts))
+            existing_users.add(name)
+        if name not in existing_shadow:
+            shadow.append(f"{name}:*:19723:0:99999:7:::")
+            existing_shadow.add(name)
+    write_text(passwd_path, "\n".join(passwd) + "\n")
+    write_text(shadow_path, "\n".join(shadow) + "\n", 0o600)
+
+
+def configure_ca_certificates(rootfs):
+    cert_root = rootfs / "usr/share/ca-certificates"
+    certs = sorted(cert_root.rglob("*.crt")) if cert_root.exists() else []
+    if not certs:
+        return
+
+    rels = [cert.relative_to(cert_root).as_posix() for cert in certs]
+    write_text(rootfs / "etc/ca-certificates.conf", "\n".join(rels) + "\n")
+
+    bundle = rootfs / "etc/ssl/certs/ca-certificates.crt"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    with bundle.open("wb") as out:
+        for cert in certs:
+            data = cert.read_bytes()
+            out.write(data)
+            if not data.endswith(b"\n"):
+                out.write(b"\n")
+    set_owner_mode(bundle, 0o644)
+
+
+def configure_standard_modes(rootfs):
+    for path in (rootfs / "tmp", rootfs / "var/tmp"):
+        path.mkdir(parents=True, exist_ok=True)
+        set_owner_mode(path, 0o1777)
+    for path in (rootfs / "run", rootfs / "var", rootfs / "var/lib"):
+        if path.exists():
+            set_owner_mode(path, path.stat().st_mode & 0o7777)
+
+
+def ensure_relative_symlink(rootfs, link, target):
+    path = rootfs / link
+    target_path = path.parent / target
+    if not target_path.exists():
+        return
+    if path.exists() or path.is_symlink():
+        path.unlink()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(target)
+
+
+def configure_basic_alternatives(rootfs):
+    ensure_relative_symlink(rootfs, "usr/bin/awk", "gawk")
+    ensure_relative_symlink(rootfs, "usr/bin/mpg123", "mpg123.bin")
+    ensure_relative_symlink(rootfs, "usr/bin/mp3-decoder", "mpg123.bin")
 
 
 def write_dpkg_status(rootfs, packages, selected):
@@ -957,6 +1485,7 @@ def write_dpkg_status(rootfs, packages, selected):
         "Maintainer",
         "Architecture",
         "Version",
+        "Provides",
         "Pre-Depends",
         "Depends",
         "Recommends",
@@ -1004,6 +1533,8 @@ def make_ext4(rootfs, image, size_mb):
 
 
 def main():
+    maybe_reexec_under_fakeroot()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=Path.cwd(), type=Path)
     parser.add_argument("--size-mb", default=768, type=int)
@@ -1054,6 +1585,10 @@ def main():
         extract_deb(deb, rootfs)
 
     configure_rootfs(root, rootfs)
+    configure_base_accounts(rootfs)
+    configure_ca_certificates(rootfs)
+    configure_standard_modes(rootfs)
+    configure_basic_alternatives(rootfs)
     write_dpkg_status(rootfs, packages, selected)
 
     manifest = work / "packages.txt"

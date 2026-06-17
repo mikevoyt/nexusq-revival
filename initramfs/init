@@ -78,6 +78,12 @@ start_watchdog_feeder() {
 	esac
 	[ "$timeout" -gt 0 ] 2>/dev/null || return
 
+	boot_grace="$(cmdline_value nq.watchdog_boot_grace)"
+	case "$boot_grace" in
+		""|*[!0-9]*) boot_grace=240 ;;
+	esac
+	[ "$boot_grace" -gt 0 ] 2>/dev/null || boot_grace=240
+
 	for n in 1 2 3 4 5 6 7 8 9 10; do
 		mdev -s 2>/dev/null || true
 		[ -e /dev/watchdog ] && break
@@ -92,16 +98,25 @@ start_watchdog_feeder() {
 	if [ -w /sys/class/watchdog/watchdog0/timeout ]; then
 		echo "$timeout" >/sys/class/watchdog/watchdog0/timeout 2>/dev/null || true
 	fi
+	if [ -w /sys/class/watchdog/watchdog0/nowayout ]; then
+		echo 1 >/sys/class/watchdog/watchdog0/nowayout 2>/dev/null || true
+	fi
 
 	interval=$((timeout / 3))
 	[ "$interval" -ge 5 ] || interval=5
 
 	(
 		exec 3>/dev/watchdog || exit 0
-		log "watchdog feeder armed timeout=${timeout}s interval=${interval}s"
+		log "watchdog feeder armed timeout=${timeout}s interval=${interval}s boot_grace=${boot_grace}s"
+		elapsed=0
 		while true; do
 			echo 1 >&3
 			sleep "$interval"
+			elapsed=$((elapsed + interval))
+			if [ "$elapsed" -ge "$boot_grace" ]; then
+				log "watchdog boot lease expired; stopping feeder"
+				exit 0
+			fi
 		done
 	) &
 	echo "$!" >/run/nq-watchdog.pid
@@ -266,6 +281,11 @@ fi
 start_wifi_test_probe
 
 if [ -x /bin/nqstreamd ]; then
+	if [ "$(cmdline_value nq.tas5713_prime)" = "1" ] && [ -x /bin/nq-tas5713-volume ]; then
+		log "priming TAS5713 private master volume"
+		/bin/nq-tas5713-volume 0x50 /dev/snd/pcmC2D0p >/dev/console 2>&1 || \
+			log "TAS5713 private master volume prime failed"
+	fi
 	log "starting nqstreamd on tcp port 5555"
 	/bin/nqstreamd -p 5555 -c 2 -d 0 >/dev/console 2>&1 &
 fi

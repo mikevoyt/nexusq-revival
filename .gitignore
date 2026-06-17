@@ -13,6 +13,8 @@ downloads/
 kernel/
 third_party/
 tools/host/
+vendor/
+root@*
 
 artifacts/*
 !artifacts/.gitkeep

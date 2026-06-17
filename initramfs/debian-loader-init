@@ -3,10 +3,15 @@
 PATH=/bin:/sbin
 export PATH
 
+read_file() {
+	/bin/busybox cat "$1" 2>/dev/null || true
+}
+
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mkdir -p /newroot
+mkdir -p /run
 
 configure_usb_gadget() {
 	CFG=/sys/kernel/config
@@ -39,6 +44,123 @@ configure_usb_gadget() {
 }
 
 configure_usb_gadget
+
+cmdline_value() {
+	key="$1"
+	for arg in $(read_file /proc/cmdline); do
+		case "$arg" in
+			$key=*)
+				echo "${arg#*=}"
+				return
+				;;
+		esac
+	done
+}
+
+load_omap_dma_module() {
+	[ -f /lib/modules/omap-dma.ko ] || return
+
+	set -- \
+		nq_legacy_cyclic_sync=1 \
+		nq_legacy_cyclic_burst=1 \
+		nq_legacy_cyclic_pack=1 \
+		nq_legacy_cyclic_block_irq=1 \
+		nq_dump_cyclic=0 \
+		nq_dump_irq_limit=0
+
+	force_descriptor_residue=0
+	case " $(read_file /proc/cmdline) " in
+	*" nq.omap_dma_force_descriptor_residue=1 "*)
+		force_descriptor_residue=1
+		;;
+	esac
+	if [ -e /etc/nq-force-descriptor-residue ]; then
+		force_descriptor_residue=1
+	fi
+	if [ "$force_descriptor_residue" = "1" ]; then
+		set -- "$@" nq_force_descriptor_residue=1
+	fi
+	force_lch_sig="$(cmdline_value nq.omap_dma_force_lch_sig)"
+	if [ -r /etc/nq-force-lch-sig ]; then
+		force_lch_sig="$(read_file /etc/nq-force-lch-sig)"
+	fi
+	case "$force_lch_sig" in
+		""|*[!0-9]*) ;;
+		*) set -- "$@" nq_force_lch_sig="$force_lch_sig" ;;
+	esac
+	force_lch="$(cmdline_value nq.omap_dma_force_lch)"
+	if [ -r /etc/nq-force-lch ]; then
+		force_lch="$(read_file /etc/nq-force-lch)"
+	fi
+	case "$force_lch" in
+		""|*[!0-9-]*) ;;
+		*) set -- "$@" nq_force_lch="$force_lch" ;;
+	esac
+	force_rw_priority="$(cmdline_value nq.omap_dma_force_rw_priority)"
+	if [ -r /etc/nq-force-rw-priority ]; then
+		force_rw_priority="$(read_file /etc/nq-force-rw-priority)"
+	fi
+	if [ "$force_rw_priority" = "1" ]; then
+		set -- "$@" nq_force_rw_priority=1
+	fi
+
+	echo "debian-loader: loading omap-dma.ko $*" >/dev/console 2>/dev/null || true
+	if ! /bin/busybox insmod /lib/modules/omap-dma.ko "$@"; then
+		echo "debian-loader: failed to load omap-dma.ko" >/dev/console 2>/dev/null || true
+	fi
+}
+
+load_omap_dma_module
+
+start_watchdog_feeder() {
+	timeout="$(cmdline_value nq.watchdog)"
+	case "$timeout" in
+		""|*[!0-9]*) return ;;
+	esac
+	[ "$timeout" -gt 0 ] 2>/dev/null || return
+
+	boot_grace="$(cmdline_value nq.watchdog_boot_grace)"
+	case "$boot_grace" in
+		""|*[!0-9]*) boot_grace=240 ;;
+	esac
+	[ "$boot_grace" -gt 0 ] 2>/dev/null || boot_grace=240
+
+	for n in 1 2 3 4 5 6 7 8 9 10; do
+		[ -e /dev/watchdog ] && break
+		sleep 1
+	done
+	if [ ! -e /dev/watchdog ]; then
+		echo "debian-loader: watchdog requested but /dev/watchdog is missing" >/dev/console 2>/dev/null || true
+		return
+	fi
+
+	if [ -w /sys/class/watchdog/watchdog0/timeout ]; then
+		echo "$timeout" >/sys/class/watchdog/watchdog0/timeout 2>/dev/null || true
+	fi
+	if [ -w /sys/class/watchdog/watchdog0/nowayout ]; then
+		echo 1 >/sys/class/watchdog/watchdog0/nowayout 2>/dev/null || true
+	fi
+	interval=$((timeout / 3))
+	[ "$interval" -ge 5 ] || interval=5
+
+	(
+		exec 3>/dev/watchdog || exit 0
+		echo "debian-loader: watchdog feeder armed timeout=${timeout}s interval=${interval}s boot_grace=${boot_grace}s" >/dev/console 2>/dev/null || true
+		elapsed=0
+		while true; do
+			echo 1 >&3
+			sleep "$interval"
+			elapsed=$((elapsed + interval))
+			if [ "$elapsed" -ge "$boot_grace" ]; then
+				echo "debian-loader: watchdog boot lease expired; stopping feeder" >/dev/console 2>/dev/null || true
+				exit 0
+			fi
+		done
+	) &
+	echo "$!" >/run/nq-watchdog.pid
+}
+
+start_watchdog_feeder
 
 reboot_fastboot() {
 	echo "debian-loader: rebooting to fastboot" >/dev/console 2>/dev/null || true

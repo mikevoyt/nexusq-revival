@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -17,6 +18,7 @@
 #define ID_FMT  0x20746d66
 #define ID_DATA 0x61746164
 #define FORMAT_PCM 1
+#define TAS5713_SET_MASTER_VOLUME _IOW('A', 0xF9, uint8_t)
 
 struct wav_fmt {
 	uint16_t audio_format;
@@ -105,7 +107,17 @@ static int read_wav_header(int fd, struct wav_fmt *fmt, uint32_t *data_size)
 	}
 }
 
-static int stream_client(int client_fd, unsigned int card, unsigned int device)
+static int pcm_write_all(struct pcm *pcm, const void *buffer, unsigned int bytes,
+			 int noirq_mmap)
+{
+	if (noirq_mmap)
+		return pcm_mmap_write(pcm, (void *)buffer, bytes);
+
+	return pcm_write(pcm, (void *)buffer, bytes);
+}
+
+static int stream_client(int client_fd, unsigned int card, unsigned int device,
+			 int tas5713_volume, int noirq_mmap)
 {
 	struct wav_fmt fmt;
 	struct pcm_config config;
@@ -133,12 +145,30 @@ static int stream_client(int client_fd, unsigned int card, unsigned int device)
 	config.period_size = 1024;
 	config.period_count = 4;
 	config.format = fmt.bits_per_sample == 32 ? PCM_FORMAT_S32_LE : PCM_FORMAT_S16_LE;
+	if (noirq_mmap) {
+		config.start_threshold = config.period_size * config.period_count;
+		config.avail_min = config.period_size;
+	}
 
-	pcm = pcm_open(card, device, PCM_OUT, &config);
+	pcm = pcm_open(card, device,
+		       PCM_OUT | (noirq_mmap ? (PCM_MMAP | PCM_NOIRQ) : 0),
+		       &config);
 	if (!pcm || !pcm_is_ready(pcm)) {
 		fprintf(stderr, "unable to open PCM card %u device %u (%s)\n",
 			card, device, pcm_get_error(pcm));
 		return 1;
+	}
+
+	if (tas5713_volume >= 0) {
+		uint8_t volume = (uint8_t)tas5713_volume;
+
+		if (pcm_ioctl(pcm, TAS5713_SET_MASTER_VOLUME, &volume) < 0) {
+			fprintf(stderr, "TAS5713_SET_MASTER_VOLUME 0x%02x failed: %s\n",
+				volume, strerror(errno));
+			pcm_close(pcm);
+			return 1;
+		}
+		printf("set TAS5713 private master volume: 0x%02x\n", volume);
 	}
 
 	frame_size = fmt.channels * (fmt.bits_per_sample / 8);
@@ -152,6 +182,9 @@ static int stream_client(int client_fd, unsigned int card, unsigned int device)
 
 	printf("streaming WAV: card=%u device=%u channels=%u rate=%u bits=%u bytes=%u\n",
 	       card, device, fmt.channels, fmt.rate, fmt.bits_per_sample, remaining);
+	if (noirq_mmap)
+		printf("using tinyalsa PCM_MMAP|PCM_NOIRQ period_size=%u periods=%u\n",
+		       config.period_size, config.period_count);
 	fflush(stdout);
 
 	while (remaining > 0) {
@@ -170,7 +203,7 @@ static int stream_client(int client_fd, unsigned int card, unsigned int device)
 			fprintf(stderr, "client closed early\n");
 			break;
 		}
-		if (pcm_write(pcm, buffer, want)) {
+		if (pcm_write_all(pcm, buffer, want, noirq_mmap)) {
 			fprintf(stderr, "pcm_write failed: %s\n", pcm_get_error(pcm));
 			break;
 		}
@@ -223,7 +256,9 @@ int main(int argc, char **argv)
 	unsigned int port = 5555;
 	unsigned int card = 2;
 	unsigned int device = 0;
+	int tas5713_volume = -1;
 	int once = 0;
+	int noirq_mmap = 0;
 	int fd;
 	int i;
 
@@ -234,10 +269,21 @@ int main(int argc, char **argv)
 			card = (unsigned int)strtoul(argv[++i], NULL, 0);
 		} else if (!strcmp(argv[i], "-d") && i + 1 < argc) {
 			device = (unsigned int)strtoul(argv[++i], NULL, 0);
+		} else if (!strcmp(argv[i], "--tas5713-volume") && i + 1 < argc) {
+			unsigned long value = strtoul(argv[++i], NULL, 0);
+			if (value > 0xff) {
+				fprintf(stderr, "TAS5713 volume must be 0..255\n");
+				return 1;
+			}
+			tas5713_volume = (int)value;
 		} else if (!strcmp(argv[i], "--once")) {
 			once = 1;
+		} else if (!strcmp(argv[i], "--noirq-mmap")) {
+			noirq_mmap = 1;
 		} else {
-			fprintf(stderr, "Usage: %s [-p port] [-c card] [-d device] [--once]\n", argv[0]);
+			fprintf(stderr,
+				"Usage: %s [-p port] [-c card] [-d device] [--tas5713-volume value] [--once] [--noirq-mmap]\n",
+				argv[0]);
 			return 1;
 		}
 	}
@@ -250,6 +296,11 @@ int main(int argc, char **argv)
 		return 1;
 
 	printf("nqstreamd listening on [::]:%u -> ALSA card %u device %u\n", port, card, device);
+	if (tas5713_volume >= 0)
+		printf("TAS5713 private master volume will be set to 0x%02x per stream\n",
+		       (unsigned int)tas5713_volume);
+	if (noirq_mmap)
+		printf("PCM streams will request no-period-wakeup mmap mode\n");
 
 	for (;;) {
 		struct sockaddr_in6 peer;
@@ -261,7 +312,7 @@ int main(int argc, char **argv)
 			perror("accept");
 			break;
 		}
-		stream_client(client, card, device);
+		stream_client(client, card, device, tas5713_volume, noirq_mmap);
 		close(client);
 		if (once)
 			break;
