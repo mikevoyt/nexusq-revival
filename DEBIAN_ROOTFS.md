@@ -33,10 +33,10 @@ image failed with `remote: 'data too large'`.
 - Wi-Fi prep: `wpasupplicant`, `wireless-regdb`, `firmware-brcm80211`.
 
 The current Linux 6.6 no-SMP kernel spike exposes TAS5713 ALSA from the Debian
-rootfs on `userdata`. `aplay -l` reports `Steelhead TAS5713`, and
-`speaker-test` opens `hw:0,0` at 48 kHz stereo. Subjective speaker quality is
-still being tuned; the public kernel patch now carries the legacy Google
-TAS5713 init table and applies it with MCLK enabled.
+rootfs on `userdata`. `aplay -l` reports `Steelhead TAS5713`, and the internal
+speaker path now plays 48 kHz PCM and MP3 cleanly after the Steelhead ABE DPLL
+clock-parent fix. The public kernel patch carries the legacy Google TAS5713
+init table and the Steelhead-specific ABE clock quirk.
 
 The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
 
@@ -45,8 +45,8 @@ The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
   across boots;
 - configures the USB configfs ACM+ECM gadget and starts a USB serial shell on
   `/dev/ttyGS0`;
-- arms an `nq.autoreboot` timer that reboots to fastboot through
-  `/sbin/nq-reboot-fastboot`;
+- arms an `nq.autoreboot` timer only when the kernel command line explicitly
+  includes `nq.autoreboot=<seconds>`;
 - configures `usb0` as `169.254.42.2/16` and `172.16.42.2/24`;
 - starts BusyBox `telnetd` on TCP port 2323;
 - drops to `/bin/sh`.
@@ -115,8 +115,7 @@ Implications:
   `linux66/nexusq-linux66-wifi-public.fragment` and does not embed those files.
 - The current Steelhead TAS5713 audio path opens at 48 kHz/S16 stereo. Plain
   44.1 kHz playback cannot be clocked by the current 6.6 patch; use `nq-play`
-  or Squeezelite's `-r 48000` configuration so userspace resamples. Speaker
-  tone quality is still under active bring-up.
+  or Squeezelite's `-r 48000` configuration so userspace resamples.
 
 ## Secret Handling
 
@@ -209,7 +208,5 @@ The next safe live path is:
 1. Publish the public release assets:
    - `artifacts/nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img`
    - `artifacts/nexusq-debian-trixie-armhf-rootfs.sparse.img`
-2. Keep using `fastboot boot` for the kernel image until longer soak tests
-   justify flashing `boot`.
-3. Finish subjective TAS5713 speaker-quality validation before relying on the
-   onboard amplifier for the audio-streamer phase.
+2. Install the public boot image with `fastboot flash boot` for normal boot.
+3. Use `fastboot boot` only for temporary test images or recovery experiments.

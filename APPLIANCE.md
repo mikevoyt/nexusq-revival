@@ -1,9 +1,9 @@
 # Appliance Provisioning
 
-This project is still conservative about boot: the recommended image is flashed
-to `userdata`, while the kernel/initramfs is launched with `fastboot boot`.
-That keeps the stock `boot` and `recovery` partitions untouched until longer
-soak tests justify a permanent boot install.
+The v0.2.0 release is intended to boot normally: flash Debian to `userdata`,
+flash the Linux 6.6 image to `boot`, and then use `fastboot reboot`. The stock
+`recovery` partition is left untouched so manual fastboot recovery remains
+available.
 
 ## Provisioning Model
 
@@ -146,8 +146,9 @@ to fastboot at the end. Omit it during risky tests. Omit
 
 ## Recovery
 
-The release boot image still arms `nq.autoreboot=180`. If the boot reaches
-userspace and the timer is not cancelled, the Q should return to fastboot.
+The public release image stays running by default. It only returns to fastboot
+automatically when booted with an explicit diagnostic command-line argument
+such as `nq.autoreboot=180`.
 
 Manual recovery from Debian:
 
@@ -162,4 +163,5 @@ Clear persistent appliance state:
 ```
 
 If userspace does not start, use the Nexus Q manual fastboot procedure and boot
-again with `fastboot boot`.
+again with `fastboot boot`, or reinstall the release image with
+`fastboot flash boot`.

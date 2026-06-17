@@ -4,13 +4,14 @@ Modern Linux for Google's abandoned spherical streaming box.
 
 This project brings the Nexus Q / Steelhead back as a small Debian-based
 network audio target. The current public release boots Debian 13.5 armhf from
-`userdata` with a Linux 6.6.142 kernel launched by fastboot.
+`userdata` with a Linux 6.6.142 kernel installed to the normal `boot`
+partition.
 
 ## Current Status
 
 Validated on real Nexus Q hardware in June 2026:
 
-- Linux 6.6.142 no-SMP boots from `fastboot boot`.
+- Linux 6.6.142 no-SMP boots from the normal `boot` partition.
 - Debian 13.5 armhf runs from a sparse ext4 image flashed to `userdata`.
 - USB ACM serial shell and USB ECM gadget are configured by early init.
 - BCM4330 Wi-Fi works with public Debian firmware plus first-boot calibration
@@ -20,12 +21,13 @@ Validated on real Nexus Q hardware in June 2026:
 - The internal TAS5713 speaker path plays 48 kHz stereo PCM and MP3 on Linux
   6.6 after the Steelhead ABE DPLL clock-parent fix.
 - Opt-in Squeezelite endpoint support is staged for Music Assistant playback.
-- The boot image arms an automatic return-to-fastboot timer for safer testing.
+- The public boot image stays running by default; return-to-fastboot is now an
+  explicit recovery command or diagnostic boot option.
 
 Still experimental:
 
-- The release is intended for `fastboot boot`, not permanent daily-driver boot
-  flashing yet.
+- Full unattended appliance use is still early, but the release now supports
+  normal boot from the `boot` partition.
 - Full systemd service bring-up is not the default init path.
 - HDMI, S/PDIF, LEDs, top ring controls, and hardware volume integration are
   not finished.
@@ -52,35 +54,39 @@ History links:
 
 ## Release Artifacts
 
-The v0.1.0 release assets are:
+The v0.2.0 release assets are:
 
 - `nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img`
-  - fastboot boot image
+  - Android boot image for `fastboot flash boot`
   - Linux 6.6.142, no-SMP, USB ACM+ECM, TAS5713 speaker playback, modular
     BCM4330 Wi-Fi
 - `nexusq-debian-trixie-armhf-rootfs.sparse.img`
   - Android sparse image for `fastboot flash userdata`
   - Debian 13.5 armhf rootfs
-- `SHA256SUMS-v0.1.0.txt`
+- `SHA256SUMS-v0.2.0.txt`
 
 Download them from:
 
-<https://github.com/mikevoyt/nexusq-revival/releases>
+<https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.2.0>
+
+Release notes are in [RELEASE_NOTES_v0.2.0.md](RELEASE_NOTES_v0.2.0.md).
 
 ## Flash And Boot
 
-This overwrites `userdata`. It does not flash `boot` or `recovery`.
+This overwrites `boot` and `userdata`. It does not flash `recovery`.
 
 ```sh
+fastboot flash boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img
 fastboot flash userdata nexusq-debian-trixie-armhf-rootfs.sparse.img
-fastboot boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img
+fastboot reboot
 ```
 
-The boot image uses `nq.autoreboot=180`, so a normal test boot returns to
-fastboot after about three minutes unless cancelled from the serial shell:
+For a temporary no-flash kernel test, use `fastboot boot` instead of flashing
+`boot`. The public image does not auto-return to fastboot. Manual recovery from
+Debian is:
 
 ```sh
-/sbin/nq-autoreboot-cancel
+/sbin/nq-reboot-fastboot
 ```
 
 Detailed instructions are in [FLASHING.md](FLASHING.md).
@@ -112,6 +118,7 @@ Broadcom Wi-Fi modules into the Debian rootfs, and creates raw plus sparse ext4
 rootfs images.
 
 More detail is in [BUILDING.md](BUILDING.md).
+The speaker-clock root cause and fix are documented in [AUDIO_CLOCK_FIX.md](AUDIO_CLOCK_FIX.md).
 
 ## Secret Handling
 

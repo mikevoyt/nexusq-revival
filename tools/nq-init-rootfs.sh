@@ -104,7 +104,7 @@ start_watchdog_feeder
 
 autoreboot="$(cmdline_value nq.autoreboot)"
 case "$autoreboot" in
-    ""|*[!0-9]*) autoreboot=300 ;;
+    ""|*[!0-9]*) autoreboot=0 ;;
 esac
 if [ "$autoreboot" -gt 0 ]; then
     (

@@ -22,7 +22,7 @@
       <h1>Nexus Q Revival</h1>
       <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, and TAS5713 speaker playback.</p>
       <div class="hero__actions">
-        <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases">Download v0.1.0</a>
+        <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.2.0">Download v0.2.0</a>
         <a class="button" href="https://github.com/mikevoyt/nexusq-revival/blob/main/FLASHING.md">Flash Guide</a>
       </div>
     </div>
@@ -50,7 +50,7 @@
           <article class="status-card">
             <span>Kernel</span>
             <strong>Linux 6.6.142</strong>
-            <p>No-SMP OMAP4 boot path via fastboot.</p>
+            <p>No-SMP OMAP4 boot path installed to the normal boot partition.</p>
           </article>
           <article class="status-card">
             <span>Distro</span>
@@ -80,9 +80,10 @@
         <ul class="check-list">
           <li>Ported a Steelhead device tree for OMAP4, TAS5713, McBSP2, USB gadget, and BCM4330 SDIO.</li>
           <li>Added a Linux 6.6 ASoC machine driver and Steelhead ABE clock quirk for the internal speaker amplifier path.</li>
-          <li>Built a Debian loader and minimal rootfs init with USB serial, auto-fastboot recovery, Wi-Fi startup, and Dropbear.</li>
+          <li>Built a Debian loader and minimal rootfs init with USB serial, explicit fastboot recovery, Wi-Fi startup, and Dropbear.</li>
           <li>Moved public Wi-Fi from embedded private blobs to modular `brcmfmac` plus first-boot calibration extraction.</li>
           <li>Staged an opt-in Squeezelite endpoint so Music Assistant can treat the Q as a native network player.</li>
+          <li>Documented the <a href="https://github.com/mikevoyt/nexusq-revival/blob/main/AUDIO_CLOCK_FIX.md">ABE DPLL clock fix</a> that removed the Linux 6.6 speaker flutter.</li>
         </ul>
       </div>
     </section>
@@ -91,12 +92,13 @@
       <div class="wrap two-col">
         <div>
           <p class="section-kicker">Release</p>
-          <h2>v0.1.0</h2>
-          <p class="prose">The first release is intentionally conservative: flash Debian to `userdata`, boot the kernel from RAM, validate, and return to fastboot.</p>
+          <h2>v0.2.0</h2>
+          <p class="prose">Flash Debian to <code>userdata</code>, install the Linux 6.6 image to <code>boot</code>, and reboot into a normal Nexus Q audio appliance path.</p>
         </div>
         <div class="commands" aria-label="Fastboot commands">
+          <code>fastboot flash boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img</code>
           <code>fastboot flash userdata nexusq-debian-trixie-armhf-rootfs.sparse.img</code>
-          <code>fastboot boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img</code>
+          <code>fastboot reboot</code>
         </div>
       </div>
     </section>

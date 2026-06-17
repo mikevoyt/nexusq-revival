@@ -6,11 +6,13 @@ OUT="$ROOT/build/linux-6.6-omap2plus-steelhead-nosmp-audio-wifi-public-debian"
 ROOTFS_DIR="$ROOT/build/debian-trixie-armhf/rootfs"
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-768}"
 MKE2FS="${MKE2FS:-/opt/homebrew/opt/e2fsprogs/sbin/mke2fs}"
+RELEASE_VERSION="${RELEASE_VERSION:-v0.2.0}"
 
 BOOT_IMAGE="$ROOT/artifacts/nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img"
 ZIMAGE_DTB="$ROOT/artifacts/linux66-omap2plus-steelhead-nosmp-audio-wifi-public-debian-zImage-dtb"
 ROOTFS_EXT4="$ROOT/artifacts/nexusq-debian-trixie-armhf-rootfs.ext4"
 ROOTFS_SPARSE="$ROOT/artifacts/nexusq-debian-trixie-armhf-rootfs.sparse.img"
+SHA256SUMS="$ROOT/artifacts/SHA256SUMS-$RELEASE_VERSION.txt"
 
 python3 "$ROOT/tools/build_debian_rootfs.py" --no-ext4
 "$ROOT/tools/build_debian_loader_initramfs_local.sh"
@@ -20,7 +22,7 @@ IMAGE="$BOOT_IMAGE" \
 ZIMAGE_DTB="$ZIMAGE_DTB" \
 RAMDISK="$ROOT/artifacts/nexusq-debian-loader-initramfs.cpio.gz" \
 FRAGMENTS="$ROOT/linux66/nexusq-linux66.fragment $ROOT/linux66/nexusq-linux66-nosmp.fragment $ROOT/linux66/nexusq-linux66-audio.fragment $ROOT/linux66/nexusq-linux66-usbecm.fragment $ROOT/linux66/nexusq-linux66-wifi-public.fragment" \
-CMDLINE="console=ttyO2,115200n8 earlyprintk ignore_loglevel root=/dev/ram0 rdinit=/init init=/init nq.root=/dev/mmcblk0p13 nq.autoreboot=180 panic=30 oops=panic" \
+CMDLINE="console=ttyO2,115200n8 earlyprintk ignore_loglevel root=/dev/ram0 rdinit=/init init=/init nq.root=/dev/mmcblk0p13 panic=30 oops=panic" \
 BUILD_MODULES=1 \
 BUILD_MODULES_M="drivers/net/wireless/broadcom/brcm80211" \
 	"$ROOT/tools/build_linux66_omap2plus_local.sh"
@@ -38,4 +40,12 @@ rm -f "$ROOTFS_EXT4" "$ROOTFS_SPARSE"
 "$MKE2FS" -t ext4 -d "$ROOTFS_DIR" -L nq-debian "$ROOTFS_EXT4" "${ROOTFS_SIZE_MB}M"
 python3 "$ROOT/tools/img2simg.py" "$ROOTFS_EXT4" "$ROOTFS_SPARSE"
 
+(
+	cd "$ROOT"
+	shasum -a 256 \
+		"artifacts/$(basename "$BOOT_IMAGE")" \
+		"artifacts/$(basename "$ROOTFS_SPARSE")"
+) > "$SHA256SUMS"
+
 ls -l "$BOOT_IMAGE" "$ROOTFS_EXT4" "$ROOTFS_SPARSE"
+cat "$SHA256SUMS"

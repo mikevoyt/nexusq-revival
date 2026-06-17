@@ -13,18 +13,27 @@ Check the device:
 fastboot devices -l
 ```
 
-## Boot The Public Debian Image
+## Install The Public Debian Image
 
-This flashes only `userdata` and RAM-boots the kernel image:
+This flashes Debian to `userdata`, installs the Linux 6.6 boot image to the
+normal `boot` partition, and reboots normally:
 
 ```sh
+fastboot flash boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img
 fastboot flash userdata nexusq-debian-trixie-armhf-rootfs.sparse.img
-fastboot boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img
+fastboot reboot
 ```
 
 The raw ext4 image is intentionally not used for fastboot flashing. The Nexus Q
 bootloader rejected the raw 768 MiB image as too large; the Android sparse image
 is the validated `userdata` flash path.
+
+To try a kernel without changing the installed `boot` partition, flash only
+`userdata` and use:
+
+```sh
+fastboot boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img
+```
 
 ## Serial Shell
 
@@ -71,9 +80,9 @@ leaves Debian running. See [APPLIANCE.md](APPLIANCE.md).
 
 ## Fastboot Recovery
 
-The release boot command line includes `nq.autoreboot=180`. If the boot reaches
-Debian init, it should return to fastboot automatically after roughly three
-minutes.
+The public release stays running by default. It does not arm an automatic
+return-to-fastboot timer unless a diagnostic image or custom boot command line
+sets `nq.autoreboot=<seconds>`.
 
 Manual reboot from the Debian shell:
 
@@ -88,4 +97,5 @@ Cancel the timer for longer sessions:
 ```
 
 If userspace does not start, use the Nexus Q's normal manual fastboot recovery
-procedure and boot again with `fastboot boot`.
+procedure. Once in fastboot, you can reinstall `boot`/`userdata` or temporarily
+test a boot image with `fastboot boot`.

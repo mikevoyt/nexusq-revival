@@ -46,6 +46,8 @@ patches/linux-6.6.142-nexusq-steelhead.patch
 
 That patch adds the Steelhead TAS5713 ASoC machine driver and fixes the TI
 composite clock divider rate callbacks needed by the audio clock tree. It also
+keeps the Steelhead ABE DPLL reference parent on `sys_clkin_ck`, matching the
+vendor 3.0 kernel and fixing the Linux 6.6 TAS5713 speaker flutter. The patch
 carries the current McBSP and OMAP SDMA diagnostic toggles used during speaker
 quality bring-up.
 
@@ -69,9 +71,13 @@ Outputs:
 artifacts/nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img
 artifacts/nexusq-debian-trixie-armhf-rootfs.ext4
 artifacts/nexusq-debian-trixie-armhf-rootfs.sparse.img
+artifacts/SHA256SUMS-v0.2.0.txt
 ```
 
-The sparse image is the one intended for `fastboot flash userdata`.
+The boot image is intended for `fastboot flash boot`. The sparse image is the
+one intended for `fastboot flash userdata`. The public release command line does
+not include `nq.autoreboot`, so the device boots normally and stays running by
+default.
 
 ## Audio Diagnostic Build
 
