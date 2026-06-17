@@ -346,6 +346,191 @@ fi
         0o755,
     )
     write_text(
+        rootfs / "sbin/nq-appliance-status",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+echo "Nexus Q appliance status"
+
+if [ -s /etc/nexusq/wpa_supplicant.conf ]; then
+    echo "wifi: persistent config present"
+else
+    echo "wifi: persistent config missing"
+fi
+
+if [ -s /etc/nexusq/authorized_keys ]; then
+    echo "ssh: persistent authorized_keys present"
+elif [ -s /root/.ssh/authorized_keys ]; then
+    echo "ssh: root authorized_keys present"
+else
+    echo "ssh: authorized_keys missing"
+fi
+
+if [ -s /var/lib/nexusq/rng.seed ]; then
+    echo "rng: persistent seed present"
+else
+    echo "rng: persistent seed missing"
+fi
+
+/sbin/nq-autoreboot-status 2>/dev/null || true
+
+if [ -e /sys/class/net/wlan0 ]; then
+    ip -brief addr show wlan0 2>/dev/null || ip addr show wlan0 2>/dev/null || true
+else
+    echo "wifi: wlan0 missing"
+fi
+
+if pgrep -x dropbear >/dev/null 2>&1 || pidof dropbear >/dev/null 2>&1; then
+    echo "ssh: dropbear running"
+else
+    echo "ssh: dropbear not running"
+fi
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-provision",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+CONFIG_DIR=/etc/nexusq
+STATE_DIR=/var/lib/nexusq
+WPA_DEST="$CONFIG_DIR/wpa_supplicant.conf"
+AUTH_DEST="$CONFIG_DIR/authorized_keys"
+RNG_DEST="$STATE_DIR/rng.seed"
+
+usage() {
+    cat <<'USAGE'
+Usage: nq-provision [options]
+
+Persist appliance provisioning files into the Debian rootfs.
+
+Options:
+  --wifi PATH              Copy PATH to /etc/nexusq/wpa_supplicant.conf
+  --authorized-keys PATH   Copy PATH to /etc/nexusq/authorized_keys
+  --rng-seed PATH          Copy PATH to /var/lib/nexusq/rng.seed
+  --clear-wifi             Remove persistent Wi-Fi config
+  --clear-authorized-keys  Remove persistent SSH authorized_keys
+  --clear-rng-seed         Remove persistent RNG seed
+  --cancel-autoreboot      Cancel the current safety return-to-fastboot timer
+  --start-network          Start or restart Wi-Fi, DHCP, and Dropbear
+  --status                 Print appliance status after changes
+  -h, --help               Show this help
+USAGE
+}
+
+die() {
+    echo "nq-provision: $*" >&2
+    exit 1
+}
+
+copy_secret() {
+    src="$1"
+    dest="$2"
+    mode="$3"
+
+    [ -s "$src" ] || die "missing or empty source: $src"
+    mkdir -p "$(dirname "$dest")" || die "cannot create $(dirname "$dest")"
+    chmod 700 "$(dirname "$dest")" 2>/dev/null || true
+    tmp="${dest}.tmp.$$"
+    cp "$src" "$tmp" || die "copy failed: $src -> $tmp"
+    chmod "$mode" "$tmp" 2>/dev/null || true
+    chown 0:0 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$dest" || die "install failed: $dest"
+    echo "installed $dest"
+}
+
+wifi_src=
+auth_src=
+rng_src=
+clear_wifi=0
+clear_auth=0
+clear_rng=0
+cancel_autoreboot=0
+start_network=0
+show_status=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --wifi)
+            [ "$#" -ge 2 ] || die "--wifi requires a path"
+            wifi_src="$2"
+            shift 2
+            ;;
+        --authorized-keys)
+            [ "$#" -ge 2 ] || die "--authorized-keys requires a path"
+            auth_src="$2"
+            shift 2
+            ;;
+        --rng-seed)
+            [ "$#" -ge 2 ] || die "--rng-seed requires a path"
+            rng_src="$2"
+            shift 2
+            ;;
+        --clear-wifi)
+            clear_wifi=1
+            shift
+            ;;
+        --clear-authorized-keys)
+            clear_auth=1
+            shift
+            ;;
+        --clear-rng-seed)
+            clear_rng=1
+            shift
+            ;;
+        --cancel-autoreboot)
+            cancel_autoreboot=1
+            shift
+            ;;
+        --start-network)
+            start_network=1
+            shift
+            ;;
+        --status)
+            show_status=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $1"
+            ;;
+    esac
+done
+
+mkdir -p "$CONFIG_DIR" "$STATE_DIR" || die "cannot create provisioning directories"
+chmod 700 "$CONFIG_DIR" "$STATE_DIR" 2>/dev/null || true
+
+[ "$clear_wifi" -eq 0 ] || { rm -f "$WPA_DEST"; echo "removed $WPA_DEST"; }
+[ "$clear_auth" -eq 0 ] || { rm -f "$AUTH_DEST"; echo "removed $AUTH_DEST"; }
+[ "$clear_rng" -eq 0 ] || { rm -f "$RNG_DEST"; echo "removed $RNG_DEST"; }
+
+[ -z "$wifi_src" ] || copy_secret "$wifi_src" "$WPA_DEST" 600
+[ -z "$auth_src" ] || copy_secret "$auth_src" "$AUTH_DEST" 600
+[ -z "$rng_src" ] || copy_secret "$rng_src" "$RNG_DEST" 600
+
+if [ "$cancel_autoreboot" -eq 1 ]; then
+    /sbin/nq-autoreboot-cancel || true
+fi
+
+if [ "$start_network" -eq 1 ]; then
+    /sbin/nq-start-network
+fi
+
+if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ]; then
+    /sbin/nq-appliance-status
+fi
+""",
+        0o755,
+    )
+    write_text(
         rootfs / "sbin/nq-prepare-wifi-firmware",
         """#!/bin/sh
 
@@ -508,14 +693,21 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export PATH
 
 LOG=/run/nexusq-network.log
-mkdir -p /run /run/nexusq /run/wpa_supplicant /root/.ssh /etc/dropbear /var/lib/misc
+mkdir -p /run /run/nexusq /run/wpa_supplicant /root/.ssh /etc/dropbear /var/lib/misc /var/lib/nexusq
 : >"$LOG"
 exec >>"$LOG" 2>&1
 
 echo "[nq-network] starting"
 date 2>/dev/null || true
 
+seeded_rng=0
 if [ -x /sbin/seed-rng ] && [ -s /tmp/rng.seed ]; then
+    /sbin/seed-rng || true
+    seeded_rng=1
+fi
+if [ "$seeded_rng" -eq 0 ] && [ -x /sbin/seed-rng ] && [ -s /var/lib/nexusq/rng.seed ]; then
+    cp /var/lib/nexusq/rng.seed /tmp/rng.seed 2>/dev/null || true
+    chmod 600 /tmp/rng.seed 2>/dev/null || true
     /sbin/seed-rng || true
 fi
 
@@ -528,9 +720,15 @@ if [ -n "$wifi_mac" ]; then
 fi
 ip link set wlan0 up 2>/dev/null || true
 
-WPA_CONF="${1:-/run/nexusq/wpa_supplicant.conf}"
-if [ ! -s "$WPA_CONF" ] && [ -s /tmp/wpa_supplicant.conf ]; then
-    WPA_CONF=/tmp/wpa_supplicant.conf
+WPA_CONF="${1:-}"
+if [ -z "$WPA_CONF" ]; then
+    for candidate in /run/nexusq/wpa_supplicant.conf /etc/nexusq/wpa_supplicant.conf /tmp/wpa_supplicant.conf
+    do
+        if [ -s "$candidate" ]; then
+            WPA_CONF="$candidate"
+            break
+        fi
+    done
 fi
 
 if [ -s "$WPA_CONF" ] && command -v wpa_supplicant >/dev/null 2>&1; then
@@ -564,20 +762,26 @@ elif command -v dhclient >/dev/null 2>&1; then
     dhclient -v -1 wlan0 || true
 fi
 
-if [ -s /run/nexusq/authorized_keys ] || [ -s /tmp/authorized_keys ]; then
-    if [ -s /run/nexusq/authorized_keys ]; then
-        cp /run/nexusq/authorized_keys /root/.ssh/authorized_keys
-    else
-        cp /tmp/authorized_keys /root/.ssh/authorized_keys
+AUTH_KEYS=
+for candidate in /run/nexusq/authorized_keys /etc/nexusq/authorized_keys /tmp/authorized_keys
+do
+    if [ -s "$candidate" ]; then
+        AUTH_KEYS="$candidate"
+        break
     fi
+done
+
+if [ -n "$AUTH_KEYS" ]; then
+    cp "$AUTH_KEYS" /root/.ssh/authorized_keys
     chmod 700 /root /root/.ssh
     chmod 600 /root/.ssh/authorized_keys
     chown 0:0 /root /root/.ssh /root/.ssh/authorized_keys 2>/dev/null || true
 fi
 
 if command -v dropbear >/dev/null 2>&1; then
-    [ -e /etc/dropbear/dropbear_ed25519_host_key ] || \
+    if [ ! -e /etc/dropbear/dropbear_ed25519_host_key ]; then
         dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key
+    fi
     killall dropbear 2>/dev/null || true
     pkill -x dropbear 2>/dev/null || true
     sleep 1
@@ -586,6 +790,14 @@ if command -v dropbear >/dev/null 2>&1; then
 fi
 
 ip addr show wlan0 2>/dev/null || ifconfig wlan0 2>/dev/null || true
+if [ -d /var/lib/nexusq ]; then
+    (
+        umask 077
+        if dd if=/dev/urandom of=/var/lib/nexusq/rng.seed.new bs=64 count=1 2>/dev/null; then
+            mv /var/lib/nexusq/rng.seed.new /var/lib/nexusq/rng.seed
+        fi
+    ) &
+fi
 echo "[nq-network] done"
 """,
         0o755,
@@ -675,7 +887,7 @@ ip link set usb0 up 2>/dev/null || true
 ip addr add 169.254.42.2/16 dev usb0 2>/dev/null || true
 ip addr add 172.16.42.2/24 dev usb0 2>/dev/null || true
 
-if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /tmp/wpa_supplicant.conf ]; then
+if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.conf ] || [ -s /tmp/wpa_supplicant.conf ]; then
     /sbin/nq-start-network
 fi
 
@@ -691,6 +903,23 @@ exec /bin/sh
     write_text(rootfs / "etc/fstab", "proc /proc proc defaults 0 0\n")
     write_text(rootfs / "etc/resolv.conf", "nameserver 1.1.1.1\n")
     write_text(rootfs / "etc/motd", "Nexus Q Debian trixie armhf rootfs\n")
+    write_text(
+        rootfs / "etc/nexusq/README",
+        """Nexus Q appliance provisioning
+
+Place persistent device-local configuration here with /sbin/nq-provision.
+Do not bake Wi-Fi passwords or private keys into public rootfs images.
+
+Expected files:
+- /etc/nexusq/wpa_supplicant.conf
+- /etc/nexusq/authorized_keys
+
+Runtime-only test files in /run/nexusq override these persistent files.
+""",
+        0o644,
+    )
+    (rootfs / "var/lib/nexusq").mkdir(parents=True, exist_ok=True)
+    (rootfs / "var/lib/nexusq").chmod(0o700)
 
     for src, dest in (
         (root / "artifacts/bin/reboot-bootloader", rootfs / "sbin/reboot-bootloader"),

@@ -79,6 +79,8 @@ fastboot after about three minutes unless cancelled from the serial shell:
 ```
 
 Detailed instructions are in [FLASHING.md](FLASHING.md).
+Persistent Wi-Fi/SSH provisioning for appliance-style use is documented in
+[APPLIANCE.md](APPLIANCE.md).
 
 ## Build
 
