@@ -1405,6 +1405,7 @@ done
 : "${NQ_LED_VISUALIZER_BRIGHTNESS:=255}"
 : "${NQ_LED_VISUALIZER_IDLE_BRIGHTNESS:=6}"
 : "${NQ_LED_VISUALIZER_GAIN:=8}"
+: "${NQ_LED_VISUALIZER_STYLE:=pulse}"
 
 pid_live() {
     pid="$1"
@@ -1451,7 +1452,8 @@ set -- /usr/sbin/nq-led-visualizer \\
     --fps "$NQ_LED_VISUALIZER_FPS" \\
     --brightness "$NQ_LED_VISUALIZER_BRIGHTNESS" \\
     --idle-brightness "$NQ_LED_VISUALIZER_IDLE_BRIGHTNESS" \\
-    --gain "$NQ_LED_VISUALIZER_GAIN"
+    --gain "$NQ_LED_VISUALIZER_GAIN" \\
+    --style "$NQ_LED_VISUALIZER_STYLE"
 
 [ -z "$NQ_LED_VISUALIZER_SHM" ] || set -- "$@" --shm "$NQ_LED_VISUALIZER_SHM"
 

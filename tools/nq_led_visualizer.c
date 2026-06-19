@@ -4,7 +4,7 @@
  *
  * Talks to the kernel-owned Steelhead AVR misc device at /dev/leds. For music
  * visualization it reads Squeezelite's VISEXPORT shared-memory sample buffer
- * and converts recent PCM amplitude into a rotating low-rate RGB ring frame.
+ * and converts recent PCM energy into a low-rate RGB ring frame.
  */
 
 #include <ctype.h>
@@ -29,9 +29,11 @@
 #define DEFAULT_BRIGHTNESS 255
 #define DEFAULT_IDLE_BRIGHTNESS 6
 #define DEFAULT_GAIN 8
+#define DEFAULT_STYLE VIS_STYLE_PULSE
 #define MAX_LEDS 64
 #define VIS_WINDOW_SAMPLES 2048
 #define VIS_EXPECTED_BUF_SIZE 16384U
+#define VIS_BANDS 3
 
 #define AVR_LED_MODE_HOST_AUTO_COMMIT 0x01
 
@@ -69,10 +71,16 @@ enum command {
 	CMD_SWEEP,
 };
 
+enum visualizer_style {
+	VIS_STYLE_PULSE,
+	VIS_STYLE_SPECTRUM,
+};
+
 struct options {
 	const char *device;
 	const char *shm;
 	enum command command;
+	enum visualizer_style style;
 	int fps;
 	int brightness;
 	int idle_brightness;
@@ -88,9 +96,25 @@ struct vis_reader {
 	size_t buf_index_off;
 	size_t running_off;
 	size_t rate_off;
+	size_t updated_off;
 	size_t buffer_off;
 	uint32_t buf_size;
 	char path[160];
+};
+
+struct vis_levels {
+	int overall;
+	int bands[VIS_BANDS];
+	bool running;
+	uint32_t updated;
+};
+
+struct visualizer_state {
+	int fluid[MAX_LEDS];
+	int velocity[MAX_LEDS];
+	int smooth_overall;
+	int smooth_bands[VIS_BANDS];
+	int limiter;
 };
 
 static volatile sig_atomic_t keep_running = 1;
@@ -107,7 +131,7 @@ static void usage(const char *argv0)
 		"usage:\n"
 		"  %s [--device /dev/leds] [--shm PATH_OR_NAME] [--fps N]\n"
 		"     [--brightness 0..255] [--idle-brightness 0..255]\n"
-		"     [--gain N]\n"
+		"     [--gain N] [--style spectrum|pulse]\n"
 		"  %s --info [--device /dev/leds]\n"
 		"  %s --off [--device /dev/leds]\n"
 		"  %s --all R G B [--device /dev/leds]\n"
@@ -387,7 +411,7 @@ static int vis_detect_layout(struct vis_reader *vis)
 {
 	size_t off;
 
-	for (off = 0; off + 16 < vis->size && off < 160; off += 4) {
+	for (off = 0; off + 20 < vis->size && off < 160; off += 4) {
 		uint32_t buf_size = read_le32(&vis->map[off]);
 		uint32_t buf_index = read_le32(&vis->map[off + 4]);
 		uint32_t rate = read_le32(&vis->map[off + 12]);
@@ -401,13 +425,14 @@ static int vis_detect_layout(struct vis_reader *vis)
 			continue;
 
 		sample_bytes = (size_t)buf_size * sizeof(int16_t);
-		if (vis->size < sample_bytes + off + 16)
+		if (vis->size < sample_bytes + off + 20)
 			continue;
 
 		vis->buf_size_off = off;
 		vis->buf_index_off = off + 4;
 		vis->running_off = off + 8;
 		vis->rate_off = off + 12;
+		vis->updated_off = off + 16;
 		vis->buffer_off = vis->size - sample_bytes;
 		vis->buf_size = buf_size;
 		return 0;
@@ -461,7 +486,22 @@ static int vis_open(struct vis_reader *vis, const char *configured)
 	return 0;
 }
 
-static int vis_read_level(struct vis_reader *vis, int gain)
+static int abs_int(int value)
+{
+	return value < 0 ? -value : value;
+}
+
+static int energy_to_raw_level(unsigned long mean, int gain, unsigned int scale)
+{
+	unsigned long long value;
+
+	value = (unsigned long long)mean * (unsigned int)gain * scale;
+	value /= 32768UL;
+	return clamp_int((int)value, 0, 4096);
+}
+
+static int vis_read_levels(struct vis_reader *vis, int gain,
+			   struct vis_levels *levels)
 {
 	uint32_t buf_size;
 	uint32_t buf_index;
@@ -469,20 +509,27 @@ static int vis_read_level(struct vis_reader *vis, int gain)
 	size_t samples;
 	size_t start;
 	size_t i;
-	unsigned long long sum = 0;
-	unsigned long mean;
-	int level;
+	unsigned long long sum_total = 0;
+	unsigned long long sum_low = 0;
+	unsigned long long sum_mid = 0;
+	unsigned long long sum_high = 0;
+	int slow = 0;
+	int fast = 0;
+	int prev = 0;
 
 	if (!vis->map)
 		return -1;
 
+	memset(levels, 0, sizeof(*levels));
 	buf_size = read_le32(&vis->map[vis->buf_size_off]);
 	buf_index = read_le32(&vis->map[vis->buf_index_off]);
 	running = vis->map[vis->running_off] != 0;
+	levels->updated = read_le32(&vis->map[vis->updated_off]);
 	if (buf_size != vis->buf_size || buf_index >= buf_size)
 		return -1;
 	if (!running)
 		return 0;
+	levels->running = true;
 
 	samples = buf_size < VIS_WINDOW_SAMPLES ? buf_size : VIS_WINDOW_SAMPLES;
 	start = (buf_index + buf_size - samples) % buf_size;
@@ -491,49 +538,223 @@ static int vis_read_level(struct vis_reader *vis, int gain)
 		size_t idx = (start + i) % buf_size;
 		int sample = read_le16s(&vis->map[vis->buffer_off +
 						  idx * sizeof(int16_t)]);
+		int low;
+		int mid;
+		int high;
 
-		if (sample < 0)
-			sample = -sample;
-		sum += (unsigned)sample;
+		slow += (sample - slow) / 16;
+		fast += (sample - fast) / 4;
+		low = slow;
+		mid = fast - slow;
+		high = sample - fast;
+
+		sum_total += (unsigned)abs_int(sample);
+		sum_low += (unsigned)abs_int(low);
+		sum_mid += (unsigned)abs_int(mid);
+		sum_high += (unsigned)(abs_int(high) + abs_int(sample - prev)) / 2;
+		prev = sample;
 	}
 
-	mean = (unsigned long)(sum / samples);
-	level = (int)((mean * (unsigned long)gain * 1024UL) / 32768UL);
-	return clamp_int(level, 0, 1024);
+	levels->overall = energy_to_raw_level(
+		(unsigned long)(sum_total / samples), gain, 1024);
+	levels->bands[0] = energy_to_raw_level(
+		(unsigned long)(sum_low / samples), gain, 1536);
+	levels->bands[1] = energy_to_raw_level(
+		(unsigned long)(sum_mid / samples), gain, 4096);
+	levels->bands[2] = energy_to_raw_level(
+		(unsigned long)(sum_high / samples), gain, 3072);
+	return 0;
 }
 
-static void render_frame(struct avr_led_rgb_vals *frame, int count, int phase,
-			 int level, bool active, const struct options *opts)
+static int smooth_level(int current, int target)
 {
-	int lit = (level * count + 1023) / 1024;
-	int ambient = active ? (level * opts->idle_brightness) / 1024 : 0;
-	int span;
+	if (target > current)
+		return current + (target - current) / 3 + 1;
+	if (target < current)
+		return current - (current - target) / 8 - 1;
+	return current;
+}
+
+static int update_limiter(struct visualizer_state *state,
+			  const struct vis_levels *levels)
+{
+	int target = levels->overall;
 	int i;
 
-	if (active && lit < 1)
-		lit = 1;
-	span = lit / 2 + 1;
+	for (i = 0; i < VIS_BANDS; i++) {
+		if (levels->bands[i] > target)
+			target = levels->bands[i];
+	}
+
+	if (state->limiter < 256)
+		state->limiter = 256;
+
+	if (target > state->limiter)
+		state->limiter += (target - state->limiter) / 2 + 16;
+	else
+		state->limiter -= (state->limiter - target) / 96 + 1;
+
+	if (state->limiter < 256)
+		state->limiter = 256;
+	return state->limiter;
+}
+
+static int normalize_level(int raw, int limiter)
+{
+	if (limiter < 1)
+		limiter = 1;
+	return clamp_int((raw * 960) / limiter, 0, 1024);
+}
+
+static void update_smoothed_levels(struct visualizer_state *state,
+				   const struct vis_levels *levels)
+{
+	int limiter = update_limiter(state, levels);
+	int i;
+
+	state->smooth_overall = clamp_int(
+		smooth_level(state->smooth_overall,
+			     normalize_level(levels->overall, limiter)),
+		0, 1024);
+	for (i = 0; i < VIS_BANDS; i++) {
+		state->smooth_bands[i] = clamp_int(
+			smooth_level(state->smooth_bands[i],
+				     normalize_level(levels->bands[i],
+						     limiter)),
+			0, 1024);
+	}
+}
+
+static void add_fluid_injection(struct visualizer_state *state, int count,
+				int center, int width, int amount)
+{
+	int d;
+
+	width = clamp_int(width, 0, count / 3);
+	amount = clamp_int(amount, 0, 1024);
+
+	for (d = -width; d <= width; d++) {
+		int dist = abs_int(d);
+		int pos = (center + d + count) % count;
+		int local = amount * (width + 1 - dist) / (width + 1);
+
+		state->fluid[pos] = clamp_int(state->fluid[pos] + local,
+					      0, 2048);
+	}
+}
+
+static void step_fluid(struct visualizer_state *state, int count, int phase,
+		       bool active)
+{
+	int next_fluid[MAX_LEDS];
+	int next_velocity[MAX_LEDS];
+	int center = phase % count;
+	int width;
+	int inject;
+	int i;
 
 	for (i = 0; i < count; i++) {
-		int dist = abs(i - phase);
-		int brightness = ambient;
-		uint8_t hue;
+		int left = state->fluid[(i + count - 1) % count];
+		int right = state->fluid[(i + 1) % count];
+		int here = state->fluid[i];
+		int velocity = state->velocity[i];
+		int lap = left + right - 2 * here;
+		int decay;
 
-		if (dist > count / 2)
-			dist = count - dist;
+		velocity += lap / 8;
+		velocity -= velocity / 9;
+		velocity = clamp_int(velocity, -1024, 1024);
 
-		if (active && dist < span) {
-			int local = opts->brightness -
-				    (dist * opts->brightness) / span;
-
-			if (local > brightness)
-				brightness = local;
-		} else if (!active && dist == 0) {
-			brightness = opts->idle_brightness;
+		here += velocity;
+		decay = here / 28 + 1;
+		here -= decay;
+		if (here < 0) {
+			here = 0;
+			velocity = 0;
 		}
 
-		hue = (uint8_t)((phase * 7 + (i * 256) / count) & 0xff);
+		next_fluid[i] = clamp_int(here, 0, 1600);
+		next_velocity[i] = velocity;
+	}
+
+	memcpy(state->fluid, next_fluid, count * sizeof(state->fluid[0]));
+	memcpy(state->velocity, next_velocity,
+	       count * sizeof(state->velocity[0]));
+
+	if (!active) {
+		add_fluid_injection(state, count, center, 0, 18);
+		return;
+	}
+
+	width = 1 + (state->smooth_bands[0] * count) / 4096;
+	inject = state->smooth_overall;
+	add_fluid_injection(state, count, center, width, inject);
+
+	add_fluid_injection(state, count, (center + count / 3) % count, 1,
+			    state->smooth_bands[1] / 2);
+	add_fluid_injection(state, count, (center + (2 * count) / 3) % count,
+			    0, state->smooth_bands[2] / 2);
+}
+
+static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
+			       int phase, bool active,
+			       const struct options *opts,
+			       struct visualizer_state *state)
+{
+	int hue_bias = (state->smooth_bands[2] - state->smooth_bands[0]) / 8;
+	int ambient = active ? state->smooth_overall / 32 : 0;
+	int i;
+
+	step_fluid(state, count, phase, active);
+
+	for (i = 0; i < count; i++) {
+		int height = clamp_int(state->fluid[i], 0, 1024);
+		int brightness = opts->idle_brightness + ambient;
+		uint8_t hue;
+
+		brightness += (height * (opts->brightness -
+					 opts->idle_brightness)) / 1024;
+		brightness = clamp_int(brightness, 0, opts->brightness);
+
+		hue = (uint8_t)((phase * 4 + (i * 256) / count + hue_bias) &
+				0xff);
 		frame[i] = scale_color(hue, brightness);
+	}
+}
+
+static void render_spectrum_frame(struct avr_led_rgb_vals *frame, int count,
+				  int phase, bool active,
+				  const struct options *opts,
+				  const struct visualizer_state *state)
+{
+	static const uint8_t hues[VIS_BANDS] = { 10, 85, 170 };
+	int b;
+
+	memset(frame, 0, sizeof(*frame) * count);
+
+	if (!active) {
+		frame[phase % count] = scale_color((uint8_t)(phase * 4),
+						   opts->idle_brightness);
+		return;
+	}
+
+	for (b = 0; b < VIS_BANDS; b++) {
+		int start = (b * count) / VIS_BANDS;
+		int end = ((b + 1) * count) / VIS_BANDS;
+		int len = end - start;
+		int lit = (state->smooth_bands[b] * len + 1023) / 1024;
+		int j;
+
+		for (j = 0; j < len; j++) {
+			int pos = start + ((j + phase) % len);
+			int brightness;
+
+			if (j >= lit)
+				continue;
+			brightness = opts->brightness -
+				(j * opts->brightness) / (lit + 1);
+			frame[pos] = scale_color(hues[b], brightness);
+		}
 	}
 }
 
@@ -541,10 +762,10 @@ static int run_visualizer(int fd, const struct options *opts)
 {
 	struct avr_led_rgb_vals frame[MAX_LEDS];
 	struct vis_reader vis = { .fd = -1 };
+	struct visualizer_state state = { .limiter = 512 };
 	int count = led_get_count(fd);
 	int interval_us;
 	int phase = 0;
-	int smooth = 0;
 	int missing_ticks = 0;
 
 	if (count < 0)
@@ -555,9 +776,11 @@ static int run_visualizer(int fd, const struct options *opts)
 	interval_us = 1000000 / clamp_int(opts->fps, 1, 60);
 
 	while (keep_running) {
-		int level = -1;
+		struct vis_levels levels;
+		int ret = -1;
 		bool active = false;
 
+		memset(&levels, 0, sizeof(levels));
 		if (vis.fd < 0) {
 			if (vis_open(&vis, opts->shm) < 0) {
 				missing_ticks++;
@@ -567,30 +790,35 @@ static int run_visualizer(int fd, const struct options *opts)
 		}
 
 		if (vis.fd >= 0) {
-			level = vis_read_level(&vis, opts->gain);
-			if (level < 0) {
+			ret = vis_read_levels(&vis, opts->gain, &levels);
+			if (ret < 0) {
 				vis_close(&vis);
 				missing_ticks++;
 			}
 		}
 
-		if (level > 0) {
+		if (levels.running)
 			active = true;
-			if (level > smooth)
-				smooth += (level - smooth) / 3 + 1;
-			else
-				smooth -= (smooth - level) / 8 + 1;
-		} else {
-			smooth -= smooth / 12 + 1;
-		}
-		smooth = clamp_int(smooth, 0, 1024);
+		else
+			memset(&levels, 0, sizeof(levels));
 
-		if (smooth > 8)
+		update_smoothed_levels(&state, &levels);
+		if (state.smooth_overall > 12)
 			active = true;
 		if (missing_ticks > opts->fps * 30)
 			active = false;
 
-		render_frame(frame, count, phase, smooth, active, opts);
+		switch (opts->style) {
+		case VIS_STYLE_PULSE:
+			render_pulse_frame(frame, count, phase, active, opts,
+					   &state);
+			break;
+		case VIS_STYLE_SPECTRUM:
+			render_spectrum_frame(frame, count, phase, active, opts,
+					      &state);
+			break;
+		}
+
 		if (led_set_range(fd, 0, (uint8_t)count, frame) < 0)
 			break;
 
@@ -609,6 +837,7 @@ static int parse_args(int argc, char **argv, struct options *opts)
 
 	opts->device = DEFAULT_LED_DEV;
 	opts->command = CMD_VISUALIZER;
+	opts->style = DEFAULT_STYLE;
 	opts->fps = DEFAULT_FPS;
 	opts->brightness = DEFAULT_BRIGHTNESS;
 	opts->idle_brightness = DEFAULT_IDLE_BRIGHTNESS;
@@ -635,6 +864,17 @@ static int parse_args(int argc, char **argv, struct options *opts)
 		} else if (strcmp(argv[i], "--gain") == 0 && i + 1 < argc) {
 			if (parse_int(argv[++i], 1, 64, &opts->gain) < 0)
 				return -1;
+		} else if (strcmp(argv[i], "--style") == 0 && i + 1 < argc) {
+			const char *style = argv[++i];
+
+			if (strcmp(style, "pulse") == 0 ||
+			    strcmp(style, "fluid") == 0) {
+				opts->style = VIS_STYLE_PULSE;
+			} else if (strcmp(style, "spectrum") == 0) {
+				opts->style = VIS_STYLE_SPECTRUM;
+			} else {
+				return -1;
+			}
 		} else if (strcmp(argv[i], "--info") == 0) {
 			opts->command = CMD_INFO;
 		} else if (strcmp(argv[i], "--off") == 0) {
