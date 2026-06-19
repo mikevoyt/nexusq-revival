@@ -22,12 +22,14 @@ image failed with `remote: 'data too large'`.
 ## Included bring-up pieces
 
 - Debian base/required package closure.
+- Bash is installed and configured as root's login shell.
 - `apt` with `trixie`, `trixie-security`, and `trixie-updates` sources.
 - `systemd`, `systemd-sysv`, `udev`, and `dbus`.
 - USB/network tools: `iproute2`, `ifupdown`, `isc-dhcp-client`, `netbase`.
 - Debug access: `dropbear-bin`, `busybox-static`.
 - Debug/transfer access: `dropbear-bin`, `busybox-static`,
-  `openssh-client`, `openssh-sftp-server`.
+  `openssh-client`, `openssh-sftp-server`, and an opt-in ADB-compatible
+  `nq-adbd-lite` daemon with root shell and file sync support.
 - Audio tools: `alsa-utils`, `alsa-ucm-conf`, `mpg123`.
 - Music Assistant endpoint prep: `squeezelite`.
 - Wi-Fi prep: `wpasupplicant`, `wireless-regdb`, `firmware-brcm80211`.
@@ -45,17 +47,20 @@ The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
   across boots;
 - configures the USB configfs ACM+ECM gadget and starts a USB serial shell on
   `/dev/ttyGS0`;
+- starts the opt-in ADB-compatible `nq-adbd-lite` daemon when
+  `/etc/nexusq/adbd.env` sets `NQ_ADBD_ENABLE=1`;
 - arms an `nq.autoreboot` timer only when the kernel command line explicitly
   includes `nq.autoreboot=<seconds>`;
 - configures `usb0` as `169.254.42.2/16` and `172.16.42.2/24`;
 - starts BusyBox `telnetd` on TCP port 2323;
-- drops to `/bin/sh`.
+- drops to `/bin/bash` when available, with `/bin/sh` as fallback.
 
 The rootfs also includes `/sbin/nq-prepare-wifi-firmware`,
 `/sbin/nq-load-wifi`, `/sbin/nq-start-network`,
 `/sbin/nq-start-squeezelite`, `/sbin/nq-player-status`,
-`/sbin/nq-provision`, `/sbin/nq-appliance-status`, and `/usr/bin/nq-play`. The
-public Wi-Fi path prepares Debian `brcmfmac4330-sdio.bin`, copies Steelhead
+`/sbin/nq-start-adbd`, `/sbin/nq-provision`, `/sbin/nq-appliance-status`,
+`/usr/sbin/nq-avr-i2c`, and `/usr/bin/nq-play`. The public Wi-Fi path prepares
+Debian `brcmfmac4330-sdio.bin`, copies Steelhead
 BCM4330 NVRAM calibration from the stock Android `system` partition when
 available, loads the modular Broadcom driver, accepts runtime-only Wi-Fi and SSH
 files in `/run/nexusq/` or `/tmp/`, accepts persistent device-local config in
@@ -71,8 +76,9 @@ Because this builder extracts `.deb` archives without running maintainer
 scripts, it writes minimal `/etc/passwd`, `/etc/group`, and `/etc/shadow`
 entries and then populates Debian's standard base-passwd users/groups. The
 root shadow entry uses a random unknown SHA-512 password hash generated at build
-time; Dropbear is still launched with password logins disabled. The builder also
-preserves package `Provides` metadata, writes the CA certificate bundle needed
+time; root's login shell is `/bin/bash`, and Dropbear is still launched with
+password logins disabled. The builder also preserves package `Provides`
+metadata, writes the CA certificate bundle needed
 for HTTPS apt, and creates a few basic alternatives such as `/usr/bin/awk` and
 `/usr/bin/mpg123` that package maintainer scripts would normally install.
 

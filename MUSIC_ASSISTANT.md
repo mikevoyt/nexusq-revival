@@ -79,6 +79,26 @@ Check status and logs:
 cat /run/nexusq-squeezelite.log
 ```
 
+If the Q disappears from Music Assistant, first check that `squeezelite` is
+actually running:
+
+```sh
+/sbin/nq-player-status
+```
+
+If the log says `disabled; set NQ_SQUEEZELITE_ENABLE=1`, create or restore
+`/etc/nexusq/squeezelite.env` and restart the endpoint:
+
+```sh
+/sbin/nq-provision \
+  --squeezelite /run/nexusq/squeezelite.env \
+  --start-squeezelite \
+  --status
+```
+
+When setting `NQ_SQUEEZELITE_NAME` manually, quote names with spaces, for
+example `NQ_SQUEEZELITE_NAME='Nexus Q'`.
+
 ## Host-Side Test Runner
 
 The serial runner can upload a temporary player config while it provisions Wi-Fi

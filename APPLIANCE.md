@@ -21,6 +21,7 @@ Persistent files:
 - `/etc/nexusq/wpa_supplicant.conf`
 - `/etc/nexusq/authorized_keys`
 - `/etc/nexusq/squeezelite.env`
+- `/etc/nexusq/adbd.env`
 - `/var/lib/nexusq/rng.seed`
 
 Do not commit real Wi-Fi config, private keys, or generated seeds. They belong
@@ -67,6 +68,44 @@ Check status:
 cat /run/nexusq-network.log
 ```
 
+## ADB Debug Bridge
+
+Development images can start a small ADB-compatible debug daemon on TCP port
+5555. It is disabled unless explicitly enabled in device-local config:
+
+```sh
+cat >/etc/nexusq/adbd.env <<'EOF'
+NQ_ADBD_ENABLE=1
+NQ_ADBD_PORT=5555
+# Optional; defaults to /bin/bash when available, then /bin/sh.
+# NQ_ADBD_SHELL=/bin/bash
+EOF
+
+/sbin/nq-start-adbd
+```
+
+Connect from a development host with Android platform-tools:
+
+```sh
+adb connect 192.168.86.38:5555
+adb -s 192.168.86.38:5555 shell 'id; uname -a'
+adb -s 192.168.86.38:5555 push local-file.txt /tmp/local-file.txt
+adb -s 192.168.86.38:5555 pull /tmp/local-file.txt ./local-file.txt
+```
+
+The repository includes a host smoke test for this surface:
+
+```sh
+ADB=/path/to/platform-tools/adb tools/test_adb_lite.sh 192.168.86.38:5555
+```
+
+The daemon provides unauthenticated root access for trusted local bring-up
+networks. It supports the classic ADB transport handshake, root Bash shells,
+recursive `adb push`/`adb pull` file sync, `adb root`, and `adb reboot
+bootloader`. It is not Android userspace `adbd`: there is no authentication,
+property service, package manager, logcat, JDWP, or Android framework shell
+protocol.
+
 ## Music Assistant Player
 
 The appliance rootfs can act as a Music Assistant Squeezelite player endpoint.
@@ -82,8 +121,8 @@ NQ_SQUEEZELITE_NAME='Nexus Q'
 NQ_SQUEEZELITE_OUTPUT=hw:0,0
 NQ_SQUEEZELITE_RATES=48000-48000
 NQ_SQUEEZELITE_RESAMPLE=hLX
-NQ_SQUEEZELITE_MASTER_VOLUME=190
-NQ_SQUEEZELITE_SPEAKER_VOLUME=204
+NQ_SQUEEZELITE_MASTER_VOLUME=231
+NQ_SQUEEZELITE_SPEAKER_VOLUME=207
 # Optional if SlimProto discovery does not work:
 # NQ_SQUEEZELITE_SERVER=192.168.1.20:3483
 EOF
@@ -101,8 +140,10 @@ Check the player:
 cat /run/nexusq-squeezelite.log
 ```
 
-The TAS5713 volume controls use raw ALSA values. The default
-`NQ_SQUEEZELITE_MASTER_VOLUME=190` is about `-8.5 dB`; `207` is roughly 0 dB.
+The TAS5713 volume controls use raw ALSA values. `207` is roughly 0 dB, and the
+default `NQ_SQUEEZELITE_MASTER_VOLUME=231` is the tested loud passive-speaker
+profile at about +12 dB. If tracks sound harsh or clipped, lower
+`NQ_SQUEEZELITE_MASTER_VOLUME` and `NQ_KNOB_MAX` to `207`.
 In Music Assistant, enable Queue Flow Mode for the Q player and set the Flow
 Mode sample rate to 48 kHz.
 

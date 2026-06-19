@@ -19,6 +19,7 @@ COMPONENTS = ("main", "non-free-firmware")
 
 EXTRA_PACKAGES = {
     "apt",
+    "bash",
     "ca-certificates",
     "busybox-static",
     "dropbear-bin",
@@ -245,7 +246,7 @@ def set_owner_mode(path, mode=None, uid=0, gid=0):
 
 def configure_rootfs(root, rootfs):
     write_text(rootfs / "etc/hostname", "nexusq\n")
-    write_text(rootfs / "etc/passwd", "root:x:0:0:root:/root:/bin/sh\n")
+    write_text(rootfs / "etc/passwd", "root:x:0:0:root:/root:/bin/bash\n")
     write_text(rootfs / "etc/group", "root:x:0:\n")
     write_text(
         rootfs / "etc/shadow",
@@ -255,6 +256,10 @@ def configure_rootfs(root, rootfs):
     write_text(
         rootfs / "etc/hosts",
         "127.0.0.1 localhost\n127.0.1.1 nexusq\n",
+    )
+    write_text(
+        rootfs / "etc/shells",
+        "/bin/sh\n/bin/dash\n/bin/bash\n/usr/bin/bash\n",
     )
     write_text(
         rootfs / "etc/apt/sources.list",
@@ -417,10 +422,39 @@ else
     echo "ssh: dropbear not running"
 fi
 
-if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+proc_name_live() {
+    name="$1"
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        [ -r "/proc/$pid/status" ] || continue
+        state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+        [ "$state" = "Z" ] && continue
+        return 0
+    done
+    return 1
+}
+
+if grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null; then
+    echo "input: Steelhead Front Panel present"
+else
+    echo "input: Steelhead Front Panel missing"
+fi
+
+if proc_name_live squeezelite; then
     echo "squeezelite: running"
 else
     echo "squeezelite: not running"
+fi
+
+if proc_name_live nq-knob-volume; then
+    echo "knob-volume: running"
+else
+    echo "knob-volume: not running"
+fi
+
+if proc_name_live nq-adbd-lite; then
+    echo "adb: nq-adbd-lite running"
+else
+    echo "adb: nq-adbd-lite not running"
 fi
 """,
         0o755,
@@ -747,6 +781,85 @@ exit 1
         0o755,
     )
     write_text(
+        rootfs / "sbin/nq-load-input",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+log() {
+    echo "[nq-load-input] $*"
+}
+
+for env in /etc/nexusq/input.env /run/nexusq/input.env /tmp/input.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_INPUT_ENABLE:=1}"
+: "${NQ_INPUT_I2C_ADAPTER:=i2c-1}"
+: "${NQ_INPUT_I2C_ADDR:=0x20}"
+: "${NQ_AVR_POLL_MS:=50}"
+: "${NQ_AVR_FORCE_POLL:=1}"
+: "${NQ_AVR_DEBUG_EVENTS:=0}"
+: "${NQ_AVR_LEGACY_INIT:=1}"
+: "${NQ_AVR_RESET_PULSE_MS:=0}"
+
+avr_args="poll_ms=$NQ_AVR_POLL_MS force_poll=$NQ_AVR_FORCE_POLL debug_events=$NQ_AVR_DEBUG_EVENTS legacy_init=$NQ_AVR_LEGACY_INIT reset_pulse_ms=$NQ_AVR_RESET_PULSE_MS"
+
+if [ "$NQ_INPUT_ENABLE" != "1" ]; then
+    log "disabled; set NQ_INPUT_ENABLE=1"
+    exit 0
+fi
+
+if grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null; then
+    log "Steelhead Front Panel already registered"
+    exit 0
+fi
+
+krel="$(uname -r)"
+mods="/lib/modules/$krel"
+
+if [ -d "$mods" ] && command -v depmod >/dev/null 2>&1; then
+    depmod -a "$krel" 2>/dev/null || true
+fi
+
+if command -v modprobe >/dev/null 2>&1; then
+    modprobe steelhead_avr $avr_args 2>/dev/null || true
+fi
+
+if ! grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null && command -v insmod >/dev/null 2>&1; then
+    ko="$mods/kernel/drivers/input/misc/steelhead_avr.ko"
+    [ -s "$ko" ] && insmod "$ko" $avr_args 2>/dev/null || true
+fi
+
+if ! grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null; then
+    adapter="/sys/bus/i2c/devices/$NQ_INPUT_I2C_ADAPTER"
+    if [ -w "$adapter/new_device" ]; then
+        log "binding steelhead-avr on $NQ_INPUT_I2C_ADAPTER at $NQ_INPUT_I2C_ADDR"
+        echo "steelhead-avr $NQ_INPUT_I2C_ADDR" >"$adapter/new_device" 2>/dev/null || true
+    else
+        log "I2C adapter $NQ_INPUT_I2C_ADAPTER cannot bind new devices"
+    fi
+fi
+
+i=0
+while [ "$i" -lt 10 ]; do
+    if grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null; then
+        log "Steelhead Front Panel ready"
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+log "Steelhead Front Panel did not appear"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
         rootfs / "sbin/nq-load-audio",
         """#!/bin/sh
 
@@ -990,6 +1103,7 @@ PID=/run/nq-squeezelite.pid
 mkdir -p /run /run/nexusq
 : >"$LOG"
 exec >>"$LOG" 2>&1
+trap '' HUP
 
 echo "[nq-squeezelite] starting"
 date 2>/dev/null || true
@@ -1007,8 +1121,8 @@ done
 : "${NQ_SQUEEZELITE_RESAMPLE:=hLX}"
 : "${NQ_SQUEEZELITE_CLOSE_TIMEOUT:=5}"
 : "${NQ_SQUEEZELITE_MIXER_CARD:=0}"
-: "${NQ_SQUEEZELITE_MASTER_VOLUME:=190}"
-: "${NQ_SQUEEZELITE_SPEAKER_VOLUME:=204}"
+: "${NQ_SQUEEZELITE_MASTER_VOLUME:=231}"
+: "${NQ_SQUEEZELITE_SPEAKER_VOLUME:=207}"
 : "${NQ_SQUEEZELITE_SPEAKER_SWITCH:=on}"
 : "${NQ_SQUEEZELITE_RESTART:=0}"
 
@@ -1021,6 +1135,40 @@ if ! command -v squeezelite >/dev/null 2>&1; then
     echo "[nq-squeezelite] squeezelite command missing"
     exit 1
 fi
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+proc_live() {
+    name="$1"
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" && return 0
+    done
+    return 1
+}
+
+stop_proc() {
+    name="$1"
+    live_pids=
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
+    sleep 1
+    live_pids=
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill -KILL $live_pids 2>/dev/null || true
+}
 
 derive_mac() {
     if [ -n "$NQ_SQUEEZELITE_MAC" ]; then
@@ -1058,18 +1206,19 @@ if command -v amixer >/dev/null 2>&1; then
 fi
 
 if [ "$NQ_SQUEEZELITE_RESTART" != "1" ]; then
-    if [ -s "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
-        echo "[nq-squeezelite] already running pid=$(cat "$PID")"
-        exit 0
+    if [ -s "$PID" ]; then
+        old_pid="$(cat "$PID" 2>/dev/null || true)"
+        if pid_live "$old_pid"; then
+            echo "[nq-squeezelite] already running pid=$old_pid"
+            exit 0
+        fi
     fi
-    if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+    if proc_live squeezelite; then
         echo "[nq-squeezelite] already running"
         exit 0
     fi
 else
-    killall squeezelite 2>/dev/null || true
-    pkill -x squeezelite 2>/dev/null || true
-    sleep 1
+    stop_proc squeezelite
 fi
 
 set -- squeezelite \
@@ -1093,12 +1242,183 @@ echo "[nq-squeezelite] exec: $*"
 echo "$!" >"$PID"
 sleep 1
 
-if kill -0 "$(cat "$PID")" 2>/dev/null; then
+if pid_live "$(cat "$PID")"; then
     echo "[nq-squeezelite] pid=$(cat "$PID")"
     exit 0
 fi
 
 echo "[nq-squeezelite] failed to stay running"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-start-knob-volume",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-knob-volume.log
+PID=/run/nq-knob-volume.pid
+mkdir -p /run /run/nexusq
+: >"$LOG"
+exec >>"$LOG" 2>&1
+trap '' HUP
+
+echo "[nq-knob-volume] starting"
+date 2>/dev/null || true
+
+for env in /etc/nexusq/knob-volume.env /run/nexusq/knob-volume.env /tmp/knob-volume.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_KNOB_ENABLE:=1}"
+: "${NQ_KNOB_MIXER_CARD:=0}"
+: "${NQ_KNOB_CONTROL:=Master Volume}"
+: "${NQ_KNOB_MUTE_CONTROL:=Speaker Switch}"
+: "${NQ_KNOB_MIN:=120}"
+: "${NQ_KNOB_MAX:=231}"
+: "${NQ_KNOB_STEP:=2}"
+: "${NQ_KNOB_MUTE_ENABLE:=1}"
+: "${NQ_KNOB_INPUT_NAME:=Steelhead Front Panel}"
+
+export NQ_KNOB_MIXER_CARD NQ_KNOB_CONTROL NQ_KNOB_MUTE_CONTROL
+export NQ_KNOB_MIN NQ_KNOB_MAX NQ_KNOB_STEP NQ_KNOB_MUTE_ENABLE
+export NQ_KNOB_INPUT_NAME NQ_KNOB_INPUT
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+knob_live() {
+    for pid in $(pgrep -x nq-knob-volume 2>/dev/null || pidof nq-knob-volume 2>/dev/null || true); do
+        pid_live "$pid" && return 0
+    done
+    return 1
+}
+
+if [ "$NQ_KNOB_ENABLE" != "1" ]; then
+    echo "[nq-knob-volume] disabled; set NQ_KNOB_ENABLE=1"
+    exit 0
+fi
+
+if [ ! -x /usr/sbin/nq-knob-volume ]; then
+    echo "[nq-knob-volume] /usr/sbin/nq-knob-volume missing"
+    exit 0
+fi
+
+if [ -s "$PID" ]; then
+    old_pid="$(cat "$PID" 2>/dev/null || true)"
+    if pid_live "$old_pid"; then
+        echo "[nq-knob-volume] already running pid=$old_pid"
+        exit 0
+    fi
+fi
+if knob_live; then
+    echo "[nq-knob-volume] already running"
+    exit 0
+fi
+
+/usr/sbin/nq-knob-volume ${NQ_KNOB_INPUT:+"$NQ_KNOB_INPUT"} &
+echo "$!" >"$PID"
+sleep 1
+
+if pid_live "$(cat "$PID")"; then
+    echo "[nq-knob-volume] pid=$(cat "$PID")"
+    exit 0
+fi
+
+echo "[nq-knob-volume] failed to stay running"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-start-adbd",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-adbd.log
+PID=/run/nq-adbd-lite.pid
+mkdir -p /run /run/nexusq
+: >"$LOG"
+exec >>"$LOG" 2>&1
+trap '' HUP
+
+echo "[nq-adbd-lite] starting"
+date 2>/dev/null || true
+
+for env in /etc/nexusq/adbd.env /run/nexusq/adbd.env /tmp/adbd.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_ADBD_ENABLE:=0}"
+: "${NQ_ADBD_PORT:=5555}"
+: "${NQ_ADBD_SHELL:=}"
+export NQ_ADBD_SHELL
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    comm="$(cat "/proc/$pid/comm" 2>/dev/null || true)"
+    [ "$comm" = "nq-adbd-lite" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+adbd_live() {
+    for pid in $(pgrep -x nq-adbd-lite 2>/dev/null || pidof nq-adbd-lite 2>/dev/null || true); do
+        pid_live "$pid" && return 0
+    done
+    return 1
+}
+
+if [ "$NQ_ADBD_ENABLE" != "1" ]; then
+    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1"
+    exit 0
+fi
+
+if [ ! -x /usr/sbin/nq-adbd-lite ]; then
+    echo "[nq-adbd-lite] /usr/sbin/nq-adbd-lite missing"
+    exit 0
+fi
+
+if [ -s "$PID" ]; then
+    old_pid="$(cat "$PID" 2>/dev/null || true)"
+    if pid_live "$old_pid"; then
+        echo "[nq-adbd-lite] already running pid=$old_pid"
+        exit 0
+    fi
+fi
+if adbd_live; then
+    echo "[nq-adbd-lite] already running"
+    exit 0
+fi
+
+/usr/sbin/nq-adbd-lite "$NQ_ADBD_PORT" &
+echo "$!" >"$PID"
+sleep 1
+
+if pid_live "$(cat "$PID")"; then
+    echo "[nq-adbd-lite] pid=$(cat "$PID") port=$NQ_ADBD_PORT"
+    exit 0
+fi
+
+echo "[nq-adbd-lite] failed to stay running"
 exit 1
 """,
         0o755,
@@ -1182,11 +1502,35 @@ else
     echo "config: /etc/nexusq/squeezelite.env missing"
 fi
 
-if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+proc_name_live() {
+    name="$1"
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        [ -r "/proc/$pid/status" ] || continue
+        state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+        [ "$state" = "Z" ] && continue
+        return 0
+    done
+    return 1
+}
+
+if proc_name_live squeezelite; then
     echo "squeezelite: running"
     ps | grep '[s]queezelite' 2>/dev/null || true
 else
     echo "squeezelite: not running"
+fi
+
+if grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null; then
+    echo "input: Steelhead Front Panel present"
+else
+    echo "input: Steelhead Front Panel missing"
+fi
+
+if proc_name_live nq-knob-volume; then
+    echo "knob-volume: running"
+    ps | grep '[n]q-knob-volume' 2>/dev/null || true
+else
+    echo "knob-volume: not running"
 fi
 
 if command -v aplay >/dev/null 2>&1; then
@@ -1196,6 +1540,11 @@ fi
 if [ -s /run/nexusq-squeezelite.log ]; then
     echo "--- /run/nexusq-squeezelite.log ---"
     tail -n 80 /run/nexusq-squeezelite.log 2>/dev/null || cat /run/nexusq-squeezelite.log
+fi
+
+if [ -s /run/nexusq-knob-volume.log ]; then
+    echo "--- /run/nexusq-knob-volume.log ---"
+    tail -n 80 /run/nexusq-knob-volume.log 2>/dev/null || cat /run/nexusq-knob-volume.log
 fi
 """,
         0o755,
@@ -1247,6 +1596,9 @@ configure_usb_gadget() {
 }
 
 start_usb_shell() {
+    shell=/bin/sh
+    [ -x /bin/bash ] && shell=/bin/bash
+
     for n in 1 2 3 4 5 6 7 8 9 10; do
         if [ -e /dev/ttyGS0 ]; then
             break
@@ -1260,7 +1612,7 @@ start_usb_shell() {
     done
 
     if [ -e /dev/ttyGS0 ]; then
-        setsid sh -c 'exec /bin/sh </dev/ttyGS0 >/dev/ttyGS0 2>&1' &
+        setsid sh -c "exec $shell </dev/ttyGS0 >/dev/ttyGS0 2>&1" &
     fi
 }
 
@@ -1329,6 +1681,10 @@ if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.con
     /sbin/nq-start-network
 fi
 
+if [ -x /sbin/nq-load-input ]; then
+    /sbin/nq-load-input || true
+fi
+
 if [ -x /sbin/nq-load-audio ]; then
     /sbin/nq-load-audio || true
 fi
@@ -1337,11 +1693,24 @@ if [ -x /sbin/nq-start-squeezelite ]; then
     /sbin/nq-start-squeezelite || true
 fi
 
+if [ -x /sbin/nq-start-knob-volume ]; then
+    /sbin/nq-start-knob-volume || true
+fi
+
+if [ -x /sbin/nq-start-adbd ]; then
+    /sbin/nq-start-adbd || true
+fi
+
 if command -v busybox >/dev/null 2>&1; then
-    busybox telnetd -l /bin/sh -p 2323 &
+    shell=/bin/sh
+    [ -x /bin/bash ] && shell=/bin/bash
+    busybox telnetd -l "$shell" -p 2323 &
 fi
 
 echo "Nexus Q Debian rescue shell on serial; usb0: 169.254.42.2"
+if [ -x /bin/bash ]; then
+    exec /bin/bash
+fi
 exec /bin/sh
 """,
         0o755,
@@ -1359,7 +1728,10 @@ Do not bake Wi-Fi passwords or private keys into public rootfs images.
 Expected files:
 - /etc/nexusq/wpa_supplicant.conf
 - /etc/nexusq/authorized_keys
+- /etc/nexusq/input.env
 - /etc/nexusq/squeezelite.env
+- /etc/nexusq/knob-volume.env
+- /etc/nexusq/adbd.env
 
 Runtime-only test files in /run/nexusq override these persistent files.
 """,
@@ -1370,6 +1742,9 @@ Runtime-only test files in /run/nexusq override these persistent files.
 
     for src, dest in (
         (root / "artifacts/bin/reboot-bootloader", rootfs / "sbin/reboot-bootloader"),
+        (root / "artifacts/bin/nq-knob-volume", rootfs / "usr/sbin/nq-knob-volume"),
+        (root / "artifacts/bin/nq-adbd-lite", rootfs / "usr/sbin/nq-adbd-lite"),
+        (root / "artifacts/bin/nq-avr-i2c", rootfs / "usr/sbin/nq-avr-i2c"),
         (root / "build/seed-rng-arm", rootfs / "sbin/seed-rng"),
     ):
         if src.exists():

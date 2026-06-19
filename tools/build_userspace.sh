@@ -52,5 +52,18 @@ build \
 	-o artifacts/bin/reboot-bootloader \
 	tools/reboot_bootloader.c
 
+build \
+	-o artifacts/bin/nq-knob-volume \
+	tools/nq_knob_volume.c
+
+build \
+	-o artifacts/bin/nq-adbd-lite \
+	tools/nq_adbd_lite.c
+
+build \
+	-o artifacts/bin/nq-avr-i2c \
+	tools/nq_avr_i2c.c
+
 ls -l artifacts/bin/tinyplay artifacts/bin/nqstreamd artifacts/bin/tinymix \
-	artifacts/bin/reboot-bootloader
+	artifacts/bin/reboot-bootloader artifacts/bin/nq-knob-volume \
+	artifacts/bin/nq-adbd-lite artifacts/bin/nq-avr-i2c
