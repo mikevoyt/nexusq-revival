@@ -20,7 +20,12 @@ Validated on real Nexus Q hardware in June 2026:
 - ALSA exposes `card 0: TAS5713 [Steelhead TAS5713]`.
 - The internal TAS5713 speaker path plays 48 kHz stereo PCM and MP3 on Linux
   6.6 after the Steelhead ABE DPLL clock-parent fix.
-- Opt-in Squeezelite endpoint support is staged for Music Assistant playback.
+- Opt-in Squeezelite endpoint support is validated for Music Assistant
+  playback.
+- The Nexus Q top ring controls TAS5713 hardware volume through the front-panel
+  AVR input driver and `nq-knob-volume`.
+- An opt-in ADB-compatible debug bridge provides root Bash shell and file sync
+  for trusted local bring-up networks.
 - The public boot image stays running by default; return-to-fastboot is now an
   explicit recovery command or diagnostic boot option.
 
@@ -29,8 +34,7 @@ Still experimental:
 - Full unattended appliance use is still early, but the release now supports
   normal boot from the `boot` partition.
 - Full systemd service bring-up is not the default init path.
-- HDMI, S/PDIF, LEDs, top ring controls, and hardware volume integration are
-  not finished.
+- HDMI, S/PDIF, LED-ring control, and cap-touch handling are not finished.
 - TAS5713 speaker validation has focused on one wired speaker so far; full
   stereo/channel-routing validation is still pending.
 - Wi-Fi depends on calibration from an existing stock `system` partition, or a
@@ -54,7 +58,7 @@ History links:
 
 ## Release Artifacts
 
-The v0.2.0 release assets are:
+The v0.3.0 release assets are:
 
 - `nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img`
   - Android boot image for `fastboot flash boot`
@@ -63,13 +67,13 @@ The v0.2.0 release assets are:
 - `nexusq-debian-trixie-armhf-rootfs.sparse.img`
   - Android sparse image for `fastboot flash userdata`
   - Debian 13.5 armhf rootfs
-- `SHA256SUMS-v0.2.0.txt`
+- `SHA256SUMS-v0.3.0.txt`
 
 Download them from:
 
-<https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.2.0>
+<https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.3.0>
 
-Release notes are in [RELEASE_NOTES_v0.2.0.md](RELEASE_NOTES_v0.2.0.md).
+Release notes are in [RELEASE_NOTES_v0.3.0.md](RELEASE_NOTES_v0.3.0.md).
 
 ## Flash And Boot
 

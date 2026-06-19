@@ -22,7 +22,7 @@
       <h1>Nexus Q Revival</h1>
       <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, and TAS5713 speaker playback.</p>
       <div class="hero__actions">
-        <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.2.0">Download v0.2.0</a>
+        <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.3.0">Download v0.3.0</a>
         <a class="button" href="https://github.com/mikevoyt/nexusq-revival/blob/main/FLASHING.md">Flash Guide</a>
       </div>
     </div>
@@ -82,7 +82,9 @@
           <li>Added a Linux 6.6 ASoC machine driver and Steelhead ABE clock quirk for the internal speaker amplifier path.</li>
           <li>Built a Debian loader and minimal rootfs init with USB serial, explicit fastboot recovery, Wi-Fi startup, and Dropbear.</li>
           <li>Moved public Wi-Fi from embedded private blobs to modular `brcmfmac` plus first-boot calibration extraction.</li>
-          <li>Staged an opt-in Squeezelite endpoint so Music Assistant can treat the Q as a native network player.</li>
+          <li>Validated an opt-in Squeezelite endpoint so Music Assistant can treat the Q as a native network player.</li>
+          <li>Connected the original top ring to TAS5713 hardware volume through the front-panel AVR input driver.</li>
+          <li>Added an opt-in ADB-compatible debug bridge with root Bash shell and file sync for trusted bring-up networks.</li>
           <li>Documented the <a href="https://github.com/mikevoyt/nexusq-revival/blob/main/AUDIO_CLOCK_FIX.md">ABE DPLL clock fix</a> that removed the Linux 6.6 speaker flutter.</li>
         </ul>
       </div>
@@ -92,8 +94,8 @@
       <div class="wrap two-col">
         <div>
           <p class="section-kicker">Release</p>
-          <h2>v0.2.0</h2>
-          <p class="prose">Flash Debian to <code>userdata</code>, install the Linux 6.6 image to <code>boot</code>, and reboot into a normal Nexus Q audio appliance path.</p>
+          <h2>v0.3.0</h2>
+          <p class="prose">Flash Debian to <code>userdata</code>, install the Linux 6.6 image to <code>boot</code>, and reboot into a Music Assistant-capable Nexus Q player with local ring volume.</p>
         </div>
         <div class="commands" aria-label="Fastboot commands">
           <code>fastboot flash boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img</code>

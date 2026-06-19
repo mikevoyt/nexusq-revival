@@ -1,6 +1,6 @@
 # Appliance Provisioning
 
-The v0.2.0 release is intended to boot normally: flash Debian to `userdata`,
+The v0.3.0 release is intended to boot normally: flash Debian to `userdata`,
 flash the Linux 6.6 image to `boot`, and then use `fastboot reboot`. The stock
 `recovery` partition is left untouched so manual fastboot recovery remains
 available.

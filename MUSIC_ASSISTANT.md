@@ -50,8 +50,8 @@ NQ_SQUEEZELITE_NAME='Nexus Q'
 NQ_SQUEEZELITE_OUTPUT=hw:0,0
 NQ_SQUEEZELITE_RATES=48000-48000
 NQ_SQUEEZELITE_RESAMPLE=hLX
-NQ_SQUEEZELITE_MASTER_VOLUME=190
-NQ_SQUEEZELITE_SPEAKER_VOLUME=204
+NQ_SQUEEZELITE_MASTER_VOLUME=231
+NQ_SQUEEZELITE_SPEAKER_VOLUME=207
 # Optional: bypass SlimProto discovery.
 # NQ_SQUEEZELITE_SERVER=192.168.1.20:3483
 EOF
@@ -128,9 +128,12 @@ automatically.
   backstop. Music Assistant Queue Flow Mode at 48 kHz is still recommended so
   the server sends a fixed-rate FLAC stream.
 - TAS5713 mixer values are raw ALSA control values, not linear loudness
-  percentages. `NQ_SQUEEZELITE_MASTER_VOLUME=190` is about `-8.5 dB`; `207` is
-  roughly 0 dB and should be treated as loud.
-- LEDs, ring controls, and hardware volume integration are not wired into Music
-  Assistant yet.
+  percentages. `207` is roughly 0 dB; the release default
+  `NQ_SQUEEZELITE_MASTER_VOLUME=231` is the tested loud passive-speaker profile
+  at about +12 dB. If tracks sound harsh or clipped, lower
+  `NQ_SQUEEZELITE_MASTER_VOLUME` and `NQ_KNOB_MAX` to `207`.
+- The physical top ring controls local TAS5713 volume. Music Assistant does not
+  yet receive hardware-volume feedback from those local changes.
+- LEDs and cap-touch handling are not wired into Music Assistant yet.
 - Full Music Assistant server-on-Q support remains a research project, not the
   practical first integration path.
