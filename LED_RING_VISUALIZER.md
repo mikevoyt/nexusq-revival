@@ -59,9 +59,11 @@ does not take the shared `pthread_rwlock_t`; it detects the layout and reads
 recent samples locklessly so it does not depend on matching libc pthread lock
 ABI details between Squeezelite and the visualizer.
 
-The first implementation is intentionally simple: it computes recent PCM
-amplitude and renders a rotating color frame. It is not an FFT or
-frequency-band visualizer yet.
+The default visualizer style is `pulse`: it derives live PCM energy from the
+Squeezelite buffer, feeds that energy into a small ring fluid simulation, and
+uses an adaptive limiter so the ring can run at full brightness without staying
+pinned at maximum. A simpler `spectrum` style is also available for
+experiments.
 
 ## Persistent Configuration
 
@@ -75,6 +77,7 @@ NQ_LED_VISUALIZER_FPS=20
 NQ_LED_VISUALIZER_BRIGHTNESS=255
 NQ_LED_VISUALIZER_IDLE_BRIGHTNESS=6
 NQ_LED_VISUALIZER_GAIN=8
+NQ_LED_VISUALIZER_STYLE=pulse
 EOF
 ```
 
@@ -125,7 +128,8 @@ Validated on real Nexus Q hardware:
 
 ## Known Gaps
 
-- The visualizer is amplitude-based only.
+- The default `pulse` visualizer is a lightweight integer approximation, not a
+  full FFT.
 - Music Assistant does not control visualizer state directly yet.
 - LED brightness and animation style are local Q config values, not MA UI
   controls.
