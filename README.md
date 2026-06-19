@@ -24,6 +24,8 @@ Validated on real Nexus Q hardware in June 2026:
   playback.
 - The Nexus Q top ring controls TAS5713 hardware volume through the front-panel
   AVR input driver and `nq-knob-volume`.
+- The LED ring is controllable through `/dev/leds`, and an opt-in Squeezelite
+  amplitude visualizer can drive it during Music Assistant playback.
 - An opt-in ADB-compatible debug bridge provides root Bash shell and file sync
   for trusted local bring-up networks.
 - The public boot image stays running by default; return-to-fastboot is now an
@@ -34,7 +36,9 @@ Still experimental:
 - Full unattended appliance use is still early, but the release now supports
   normal boot from the `boot` partition.
 - Full systemd service bring-up is not the default init path.
-- HDMI, S/PDIF, LED-ring control, and cap-touch handling are not finished.
+- HDMI, S/PDIF, advanced LED effects, and cap-touch handling are not finished.
+- The LED visualizer is an early amplitude-based effect, not a frequency-band
+  or Music Assistant UI-integrated visualizer yet.
 - TAS5713 speaker validation has focused on one wired speaker so far; full
   stereo/channel-routing validation is still pending.
 - Wi-Fi depends on calibration from an existing stock `system` partition, or a
@@ -98,6 +102,8 @@ Persistent Wi-Fi/SSH provisioning for appliance-style use is documented in
 [APPLIANCE.md](APPLIANCE.md).
 Music Assistant player endpoint setup is documented in
 [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md).
+LED ring control and the Squeezelite visualizer are documented in
+[LED_RING_VISUALIZER.md](LED_RING_VISUALIZER.md).
 
 ## Build
 

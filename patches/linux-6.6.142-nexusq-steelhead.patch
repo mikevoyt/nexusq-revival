@@ -1,6 +1,6 @@
 diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts
 --- build/patch-pristine/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts	1969-12-31 16:00:00
-+++ kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts	2026-06-19 11:27:34
++++ kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts	2026-06-19 13:07:01
 @@ -0,0 +1,298 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;
@@ -1560,8 +1560,8 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
  	else
 diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/input/misc/Kconfig kernel/linux-6.6.142/drivers/input/misc/Kconfig
 --- build/patch-pristine/linux-6.6.142/drivers/input/misc/Kconfig	2026-06-01 08:43:16
-+++ kernel/linux-6.6.142/drivers/input/misc/Kconfig	2026-06-19 09:40:46
-@@ -119,6 +119,20 @@
++++ kernel/linux-6.6.142/drivers/input/misc/Kconfig	2026-06-19 13:20:32
+@@ -119,6 +119,21 @@
  	  To compile this driver as a module, choose M here: the
  	  module will be called atmel_captouch.
  
@@ -1574,7 +1574,8 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +
 +	  The AVR reports the capacitive mute and volume controls over an
 +	  I2C event FIFO. This driver exposes those controls as standard
-+	  Linux input key events.
++	  Linux input key events. It also exposes the RGB LED ring through
++	  the Nexus Q legacy misc ioctl interface at /dev/leds.
 +
 +	  To compile this driver as a module, choose M here: the module
 +	  will be called steelhead_avr.
@@ -1595,8 +1596,8 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
  obj-$(CONFIG_INPUT_CM109)		+= cm109.o
 diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/input/misc/steelhead_avr.c kernel/linux-6.6.142/drivers/input/misc/steelhead_avr.c
 --- build/patch-pristine/linux-6.6.142/drivers/input/misc/steelhead_avr.c	1969-12-31 16:00:00
-+++ kernel/linux-6.6.142/drivers/input/misc/steelhead_avr.c	2026-06-19 11:48:07
-@@ -0,0 +1,446 @@
++++ kernel/linux-6.6.142/drivers/input/misc/steelhead_avr.c	2026-06-19 13:20:22
+@@ -0,0 +1,819 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Google Nexus Q / Steelhead AVR front panel input driver.
@@ -1606,12 +1607,17 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 + */
 +
 +#include <linux/delay.h>
++#include <linux/fs.h>
 +#include <linux/gpio/consumer.h>
 +#include <linux/i2c.h>
 +#include <linux/input.h>
 +#include <linux/interrupt.h>
++#include <linux/ioctl.h>
++#include <linux/miscdevice.h>
 +#include <linux/module.h>
 +#include <linux/mutex.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
 +#include <linux/workqueue.h>
 +
 +#define STEELHEAD_AVR_KEY_EVENT_FIFO	0x00
@@ -1628,8 +1634,10 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +#define STEELHEAD_AVR_LED_MODE_HOST		0x02
 +#define STEELHEAD_AVR_LED_MODE_POWER_UP		0x03
 +#define STEELHEAD_AVR_LED_SET_ALL		0x03
++#define STEELHEAD_AVR_LED_SET_RANGE		0x04
 +#define STEELHEAD_AVR_LED_COMMIT		0x05
 +#define STEELHEAD_AVR_LED_COMMIT_NOW		0x00
++#define STEELHEAD_AVR_LED_COMMIT_INTERPOLATE	0x01
 +#define STEELHEAD_AVR_LED_SET_MUTE		0x06
 +#define STEELHEAD_AVR_LED_COUNT			0x07
 +#define STEELHEAD_AVR_HW_TYPE			0x08
@@ -1643,6 +1651,35 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +#define STEELHEAD_AVR_MAX_EVENTS	64
 +#define STEELHEAD_AVR_I2C_ATTEMPTS	5
 +#define STEELHEAD_AVR_DEFAULT_POLL_MS	50
++#define STEELHEAD_AVR_DEFAULT_LED_COUNT	32
++#define STEELHEAD_AVR_MAX_LEDS		64
++
++struct steelhead_avr_rgb {
++	u8 rgb[3];
++};
++
++struct steelhead_avr_led_range {
++	u8 start;
++	u8 count;
++	u8 rgb_triples;
++	struct steelhead_avr_rgb rgb_vals[];
++};
++
++#define AVR_LED_MAGIC 0xe2
++#define AVR_LED_GET_FIRMWARE_REVISION _IOR(AVR_LED_MAGIC, 1, __u16)
++#define AVR_LED_GET_HARDWARE_TYPE     _IOR(AVR_LED_MAGIC, 2, __u8)
++#define AVR_LED_GET_HARDWARE_REVISION _IOR(AVR_LED_MAGIC, 3, __u8)
++#define AVR_LED_GET_MODE              _IOR(AVR_LED_MAGIC, 4, __u8)
++#define AVR_LED_SET_MODE              _IOW(AVR_LED_MAGIC, 5, __u8)
++#define AVR_LED_GET_COUNT             _IOR(AVR_LED_MAGIC, 6, __u8)
++#define AVR_LED_SET_ALL_VALS          _IOW(AVR_LED_MAGIC, 9, \
++					   struct steelhead_avr_rgb)
++#define AVR_LED_SET_RANGE_VALS        _IOW(AVR_LED_MAGIC, 11, \
++					   struct steelhead_avr_led_range)
++#define AVR_LED_COMMIT_LED_STATE      _IOW(AVR_LED_MAGIC, 13, __u8)
++#define AVR_LED_RESET                 _IO(AVR_LED_MAGIC, 14)
++#define AVR_LED_SET_MUTE              _IOW(AVR_LED_MAGIC, 15, \
++					   struct steelhead_avr_rgb)
 +
 +static unsigned int poll_ms = STEELHEAD_AVR_DEFAULT_POLL_MS;
 +module_param(poll_ms, uint, 0644);
@@ -1674,7 +1711,11 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	struct input_dev *input;
 +	struct gpio_desc *reset_gpio;
 +	struct delayed_work poll_work;
++	struct miscdevice led_miscdev;
++	struct mutex api_lock;
 +	struct mutex i2c_lock;
++	struct steelhead_avr_rgb mute_led;
++	struct steelhead_avr_rgb *led_cache;
 +	bool polling;
 +	u8 led_mode;
 +	u8 led_count;
@@ -1765,9 +1806,163 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	return ret;
 +}
 +
++static int steelhead_avr_write_raw(struct steelhead_avr *avr, const u8 *buf,
++				   size_t len)
++{
++	struct i2c_client *client = avr->client;
++	int ret = 0;
++	int try;
++
++	mutex_lock(&avr->i2c_lock);
++	for (try = 0; try < STEELHEAD_AVR_I2C_ATTEMPTS; try++) {
++		ret = i2c_master_send(client, buf, len);
++		if (ret == len) {
++			mutex_unlock(&avr->i2c_lock);
++			return 0;
++		}
++		usleep_range(1000, 2000);
++	}
++	mutex_unlock(&avr->i2c_lock);
++
++	return ret < 0 ? ret : -EIO;
++}
++
 +static int steelhead_avr_read_event(struct steelhead_avr *avr, u8 *event)
 +{
 +	return steelhead_avr_read(avr, STEELHEAD_AVR_KEY_EVENT_FIFO, event, 1);
++}
++
++static int steelhead_avr_get_firmware_rev(struct steelhead_avr *avr, u16 *rev)
++{
++	u8 version[2];
++	int ret;
++
++	ret = steelhead_avr_read(avr, STEELHEAD_AVR_FW_VERSION, version,
++				 sizeof(version));
++	if (ret)
++		return ret;
++
++	*rev = ((u16)version[0] << 8) | version[1];
++	return 0;
++}
++
++static int steelhead_avr_set_mode(struct steelhead_avr *avr, u8 mode)
++{
++	int ret;
++
++	if (mode > STEELHEAD_AVR_LED_MODE_POWER_UP)
++		return -EINVAL;
++
++	ret = steelhead_avr_write_byte(avr, STEELHEAD_AVR_LED_MODE, mode);
++	if (!ret)
++		avr->led_mode = mode;
++
++	return ret;
++}
++
++static int steelhead_avr_commit(struct steelhead_avr *avr, u8 val)
++{
++	if (val != STEELHEAD_AVR_LED_COMMIT_NOW &&
++	    val != STEELHEAD_AVR_LED_COMMIT_INTERPOLATE)
++		return -EINVAL;
++
++	return steelhead_avr_write_byte(avr, STEELHEAD_AVR_LED_COMMIT, val);
++}
++
++static void steelhead_avr_cache_all(struct steelhead_avr *avr,
++				    const struct steelhead_avr_rgb *rgb)
++{
++	int i;
++
++	if (!avr->led_cache)
++		return;
++
++	for (i = 0; i < avr->led_count; i++)
++		avr->led_cache[i] = *rgb;
++}
++
++static int steelhead_avr_set_all(struct steelhead_avr *avr,
++				 const struct steelhead_avr_rgb *rgb)
++{
++	int ret;
++
++	ret = steelhead_avr_write_block(avr, STEELHEAD_AVR_LED_SET_ALL,
++					rgb->rgb, sizeof(rgb->rgb));
++	if (!ret)
++		steelhead_avr_cache_all(avr, rgb);
++
++	return ret;
++}
++
++static void steelhead_avr_cache_range(struct steelhead_avr *avr, u8 start,
++				      u8 count, u8 rgb_triples,
++				      const struct steelhead_avr_rgb *rgb)
++{
++	int i;
++
++	if (!avr->led_cache)
++		return;
++
++	for (i = 0; i < count; i++) {
++		u8 src = i < rgb_triples ? i : rgb_triples - 1;
++
++		avr->led_cache[start + i] = rgb[src];
++	}
++}
++
++static int steelhead_avr_set_range(struct steelhead_avr *avr, u8 start,
++				   u8 count, u8 rgb_triples,
++				   const struct steelhead_avr_rgb *rgb)
++{
++	u8 payload[1 + sizeof(struct steelhead_avr_led_range) +
++		   STEELHEAD_AVR_MAX_LEDS * sizeof(struct steelhead_avr_rgb)];
++	size_t rgb_len = rgb_triples * sizeof(*rgb);
++	size_t len = 1 + sizeof(struct steelhead_avr_led_range) + rgb_len;
++	int ret;
++
++	if (!count || !rgb_triples || rgb_triples > count)
++		return -EINVAL;
++	if (start >= avr->led_count || start + count > avr->led_count)
++		return -EINVAL;
++	if (rgb_triples > STEELHEAD_AVR_MAX_LEDS)
++		return -EINVAL;
++
++	payload[0] = STEELHEAD_AVR_LED_SET_RANGE;
++	payload[1] = start;
++	payload[2] = count;
++	payload[3] = rgb_triples;
++	memcpy(&payload[4], rgb, rgb_len);
++
++	ret = steelhead_avr_write_raw(avr, payload, len);
++	if (!ret)
++		steelhead_avr_cache_range(avr, start, count, rgb_triples, rgb);
++
++	return ret;
++}
++
++static int steelhead_avr_set_mute(struct steelhead_avr *avr,
++				  const struct steelhead_avr_rgb *rgb)
++{
++	int ret;
++
++	ret = steelhead_avr_write_block(avr, STEELHEAD_AVR_LED_SET_MUTE,
++					rgb->rgb, sizeof(rgb->rgb));
++	if (!ret)
++		avr->mute_led = *rgb;
++
++	return ret;
++}
++
++static void steelhead_avr_restore_leds(struct steelhead_avr *avr)
++{
++	if (!legacy_init || !avr->led_cache || !avr->led_count)
++		return;
++
++	steelhead_avr_set_mute(avr, &avr->mute_led);
++	steelhead_avr_set_mode(avr, avr->led_mode);
++	steelhead_avr_set_range(avr, 0, avr->led_count, avr->led_count,
++				avr->led_cache);
++	steelhead_avr_commit(avr, STEELHEAD_AVR_LED_COMMIT_NOW);
 +}
 +
 +static void steelhead_avr_report_event(struct steelhead_avr *avr, u8 event)
@@ -1777,6 +1972,9 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +
 +	if (event == STEELHEAD_AVR_KEY_EVENT_RESET) {
 +		dev_info(avr->dev, "front panel AVR reset notification\n");
++		mutex_lock(&avr->api_lock);
++		steelhead_avr_restore_leds(avr);
++		mutex_unlock(&avr->api_lock);
 +		return;
 +	}
 +
@@ -1853,10 +2051,165 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +				      msecs_to_jiffies(poll_ms));
 +}
 +
++static struct steelhead_avr *steelhead_avr_from_file(struct file *file)
++{
++	struct miscdevice *misc = file->private_data;
++
++	return container_of(misc, struct steelhead_avr, led_miscdev);
++}
++
++static long steelhead_avr_led_ioctl(struct file *file, unsigned int cmd,
++				    unsigned long arg)
++{
++	struct steelhead_avr *avr = steelhead_avr_from_file(file);
++	void __user *argp = (void __user *)arg;
++	long ret = 0;
++
++	mutex_lock(&avr->api_lock);
++
++	switch (cmd) {
++	case AVR_LED_GET_FIRMWARE_REVISION: {
++		u16 rev;
++
++		ret = steelhead_avr_get_firmware_rev(avr, &rev);
++		if (!ret && copy_to_user(argp, &rev, sizeof(rev)))
++			ret = -EFAULT;
++		break;
++	}
++	case AVR_LED_GET_HARDWARE_TYPE:
++	case AVR_LED_GET_HARDWARE_REVISION: {
++		u8 reg = cmd == AVR_LED_GET_HARDWARE_TYPE ?
++			 STEELHEAD_AVR_HW_TYPE : STEELHEAD_AVR_HW_REVISION;
++		u8 val;
++
++		ret = steelhead_avr_read(avr, reg, &val, sizeof(val));
++		if (!ret && copy_to_user(argp, &val, sizeof(val)))
++			ret = -EFAULT;
++		break;
++	}
++	case AVR_LED_GET_MODE: {
++		u8 mode = avr->led_mode;
++
++		if (copy_to_user(argp, &mode, sizeof(mode)))
++			ret = -EFAULT;
++		break;
++	}
++	case AVR_LED_SET_MODE: {
++		u8 mode;
++
++		if (copy_from_user(&mode, argp, sizeof(mode))) {
++			ret = -EFAULT;
++			break;
++		}
++		ret = steelhead_avr_set_mode(avr, mode);
++		break;
++	}
++	case AVR_LED_GET_COUNT: {
++		u8 count = avr->led_count;
++
++		if (copy_to_user(argp, &count, sizeof(count)))
++			ret = -EFAULT;
++		break;
++	}
++	case AVR_LED_SET_ALL_VALS: {
++		struct steelhead_avr_rgb rgb;
++
++		if (copy_from_user(&rgb, argp, sizeof(rgb))) {
++			ret = -EFAULT;
++			break;
++		}
++		ret = steelhead_avr_set_all(avr, &rgb);
++		break;
++	}
++	case AVR_LED_SET_RANGE_VALS: {
++		struct steelhead_avr_led_range req;
++		struct steelhead_avr_rgb *rgb;
++		size_t rgb_len;
++		const u8 __user *rgb_user;
++
++		if (copy_from_user(&req, argp, sizeof(req))) {
++			ret = -EFAULT;
++			break;
++		}
++		if (!req.count || !req.rgb_triples ||
++		    req.rgb_triples > req.count ||
++		    req.rgb_triples > STEELHEAD_AVR_MAX_LEDS ||
++		    req.start >= avr->led_count ||
++		    req.start + req.count > avr->led_count) {
++			ret = -EINVAL;
++			break;
++		}
++
++		rgb_len = req.rgb_triples * sizeof(*rgb);
++		rgb_user = (const u8 __user *)argp + sizeof(req);
++		rgb = memdup_user(rgb_user, rgb_len);
++		if (IS_ERR(rgb)) {
++			ret = PTR_ERR(rgb);
++			break;
++		}
++
++		ret = steelhead_avr_set_range(avr, req.start, req.count,
++					      req.rgb_triples, rgb);
++		kfree(rgb);
++		break;
++	}
++	case AVR_LED_COMMIT_LED_STATE: {
++		u8 val;
++
++		if (copy_from_user(&val, argp, sizeof(val))) {
++			ret = -EFAULT;
++			break;
++		}
++		ret = steelhead_avr_commit(avr, val);
++		break;
++	}
++	case AVR_LED_RESET:
++		if (!avr->reset_gpio) {
++			ret = -ENODEV;
++			break;
++		}
++		gpiod_set_value_cansleep(avr->reset_gpio, 1);
++		msleep(100);
++		gpiod_set_value_cansleep(avr->reset_gpio, 0);
++		msleep(250);
++		steelhead_avr_restore_leds(avr);
++		break;
++	case AVR_LED_SET_MUTE: {
++		struct steelhead_avr_rgb rgb;
++
++		if (copy_from_user(&rgb, argp, sizeof(rgb))) {
++			ret = -EFAULT;
++			break;
++		}
++		ret = steelhead_avr_set_mute(avr, &rgb);
++		break;
++	}
++	default:
++		ret = -ENOTTY;
++		break;
++	}
++
++	mutex_unlock(&avr->api_lock);
++	return ret;
++}
++
++static const struct file_operations steelhead_avr_led_fops = {
++	.owner = THIS_MODULE,
++	.unlocked_ioctl = steelhead_avr_led_ioctl,
++	.llseek = no_llseek,
++};
++
++static void steelhead_avr_misc_deregister(void *data)
++{
++	struct steelhead_avr *avr = data;
++
++	misc_deregister(&avr->led_miscdev);
++}
++
 +static int steelhead_avr_hw_init(struct steelhead_avr *avr)
 +{
 +	u8 version[2];
-+	u8 black[3] = { 0, 0, 0 };
++	struct steelhead_avr_rgb black = { .rgb = { 0, 0, 0 } };
 +	u8 hw_type = 0;
 +	u8 hw_rev = 0;
 +	int ret;
@@ -1881,19 +2234,18 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	dev_info(avr->dev, "front panel AVR firmware %u.%u\n",
 +		 version[0], version[1]);
 +
-+	if (!legacy_init)
-+		return 0;
-+
-+	ret = steelhead_avr_write_block(avr, STEELHEAD_AVR_LED_SET_MUTE,
-+					black, sizeof(black));
-+	if (ret)
-+		dev_warn(avr->dev, "failed to clear mute LED: %d\n", ret);
++	if (legacy_init) {
++		ret = steelhead_avr_set_mute(avr, &black);
++		if (ret)
++			dev_warn(avr->dev, "failed to clear mute LED: %d\n",
++				 ret);
++	}
 +
 +	ret = steelhead_avr_read(avr, STEELHEAD_AVR_LED_COUNT,
 +				 &avr->led_count, sizeof(avr->led_count));
 +	if (ret) {
 +		dev_warn(avr->dev, "failed to read LED count: %d\n", ret);
-+		avr->led_count = 32;
++		avr->led_count = STEELHEAD_AVR_DEFAULT_LED_COUNT;
 +	}
 +
 +	ret = steelhead_avr_read(avr, STEELHEAD_AVR_LED_MODE,
@@ -1909,8 +2261,9 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +			   sizeof(hw_rev));
 +
 +	dev_info(avr->dev,
-+		 "legacy init: led_count=%u led_mode=%u hw_type=%u hw_rev=%u\n",
-+		 avr->led_count, avr->led_mode, hw_type, hw_rev);
++		 "%s init: led_count=%u led_mode=%u hw_type=%u hw_rev=%u\n",
++		 legacy_init ? "legacy" : "minimal", avr->led_count,
++		 avr->led_mode, hw_type, hw_rev);
 +
 +	return 0;
 +}
@@ -1930,6 +2283,7 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +
 +	avr->dev = dev;
 +	avr->client = client;
++	mutex_init(&avr->api_lock);
 +	mutex_init(&avr->i2c_lock);
 +	i2c_set_clientdata(client, avr);
 +
@@ -1975,6 +2329,27 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	if (ret)
 +		return ret;
 +
++	if (!avr->led_count || avr->led_count > STEELHEAD_AVR_MAX_LEDS) {
++		dev_warn(dev, "unexpected LED count %u; using %u\n",
++			 avr->led_count, STEELHEAD_AVR_DEFAULT_LED_COUNT);
++		avr->led_count = STEELHEAD_AVR_DEFAULT_LED_COUNT;
++	}
++
++	avr->led_cache = devm_kcalloc(dev, avr->led_count,
++				      sizeof(*avr->led_cache), GFP_KERNEL);
++	if (!avr->led_cache)
++		return -ENOMEM;
++
++	avr->led_miscdev.minor = MISC_DYNAMIC_MINOR;
++	avr->led_miscdev.name = "leds";
++	avr->led_miscdev.fops = &steelhead_avr_led_fops;
++	ret = misc_register(&avr->led_miscdev);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register LED misc device\n");
++	ret = devm_add_action_or_reset(dev, steelhead_avr_misc_deregister, avr);
++	if (ret)
++		return ret;
++
 +	if (irq > 0) {
 +		ret = devm_request_threaded_irq(dev, irq, NULL,
 +						steelhead_avr_irq_thread,
@@ -2013,8 +2388,7 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	if (avr && avr->polling)
 +		cancel_delayed_work_sync(&avr->poll_work);
 +	if (avr && legacy_init)
-+		steelhead_avr_write_byte(avr, STEELHEAD_AVR_LED_MODE,
-+					 STEELHEAD_AVR_LED_MODE_POWER_UP);
++		steelhead_avr_set_mode(avr, STEELHEAD_AVR_LED_MODE_POWER_UP);
 +}
 +
 +static const struct of_device_id steelhead_avr_of_match[] = {
@@ -2040,12 +2414,12 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +};
 +module_i2c_driver(steelhead_avr_driver);
 +
-+MODULE_DESCRIPTION("Google Nexus Q / Steelhead AVR front panel input driver");
++MODULE_DESCRIPTION("Google Nexus Q / Steelhead AVR front panel input and LED driver");
 +MODULE_AUTHOR("Google, Inc.; Nexus Q revival contributors");
 +MODULE_LICENSE("GPL");
 diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts kernel/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts
 --- build/patch-pristine/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts	1969-12-31 16:00:00
-+++ kernel/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts	2026-06-19 11:27:34
++++ kernel/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts	2026-06-19 13:07:01
 @@ -0,0 +1,298 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;

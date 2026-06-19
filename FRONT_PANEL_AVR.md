@@ -153,7 +153,7 @@ check that `nq-knob-volume` is still running and attached to the current
 `/dev/input/event0`, then restart `/sbin/nq-start-knob-volume` after the input
 driver reload.
 
-## Future LED Work
+## LED Ring Control
 
 The old AVR LED register map is:
 
@@ -168,6 +168,11 @@ The old AVR LED register map is:
 - `0x0a`: firmware version
 
 LED support should live with the same AVR owner as the input driver, not in a
-second userspace I2C client. A future extension can expose the ring through the
-LED subsystem or a small misc device, while preserving one kernel-side owner of
-the AVR I2C address.
+second userspace I2C client. The Linux 6.6 driver now follows that model:
+`steelhead_avr.ko` owns the AVR and exposes the legacy Nexus Q LED ioctl ABI at
+`/dev/leds`.
+
+The generated rootfs includes `/usr/sbin/nq-led-visualizer`, which can set test
+colors, run a sweep, or read Squeezelite's shared-memory PCM export to animate
+the ring during playback. See [LED_RING_VISUALIZER.md](LED_RING_VISUALIZER.md)
+for configuration and validation details.
