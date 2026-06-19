@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 MODULE_PATTERNS = (
+    "drivers/input/misc/steelhead_avr.ko",
     "drivers/dma/ti/omap-dma.ko",
     "sound/soc/codecs/snd-soc-tas571x.ko",
     "sound/soc/ti/snd-soc-ti-sdma.ko",

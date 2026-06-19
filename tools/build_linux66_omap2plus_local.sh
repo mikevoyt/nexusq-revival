@@ -20,6 +20,10 @@ fi
 CROSS_COMPILE="${CROSS_COMPILE:-/opt/ST/STM32CubeCLT/GNU-tools-for-STM32/bin/arm-none-eabi-}"
 HOST_ELF_H="${HOST_ELF_H:-/opt/ST/STM32CubeCLT/GNU-tools-for-STM32/arm-none-eabi/include/elf.h}"
 HOSTCFLAGS_LOCAL="-I$ROOT/tools/host/include ${HOSTCFLAGS:-}"
+if [ -z "${PKG_CONFIG_PATH:-}" ] &&
+	[ -d /opt/homebrew/opt/openssl@3/lib/pkgconfig ]; then
+	export PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig
+fi
 FRAGMENTS="${FRAGMENTS:-$ROOT/linux66/nexusq-linux66.fragment}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 RAMDISK_ADDR="${RAMDISK_ADDR:-0x83000000}"

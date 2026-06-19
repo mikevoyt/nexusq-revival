@@ -124,12 +124,20 @@ if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.con
     /sbin/nq-start-network
 fi
 
+if [ -x /sbin/nq-load-input ]; then
+    /sbin/nq-load-input || true
+fi
+
 if [ -x /sbin/nq-load-audio ]; then
     /sbin/nq-load-audio || true
 fi
 
 if [ -x /sbin/nq-start-squeezelite ]; then
     /sbin/nq-start-squeezelite || true
+fi
+
+if [ -x /sbin/nq-start-knob-volume ]; then
+    /sbin/nq-start-knob-volume || true
 fi
 
 if command -v busybox >/dev/null 2>&1; then

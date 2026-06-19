@@ -1,5 +1,6 @@
---- build/patch-pristine/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts
-+++ kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts
+--- build/patch-pristine/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts	1969-12-31 16:00:00
++++ kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts	2026-06-19 10:01:04
 @@ -0,0 +1,268 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;
@@ -269,8 +270,9 @@
 +	power = <500>;
 +	status = "okay";
 +};
---- build/patch-pristine/linux-6.6.142/arch/arm/mach-omap2/omap4-restart.c
-+++ kernel/linux-6.6.142/arch/arm/mach-omap2/omap4-restart.c
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/arch/arm/mach-omap2/omap4-restart.c kernel/linux-6.6.142/arch/arm/mach-omap2/omap4-restart.c
+--- build/patch-pristine/linux-6.6.142/arch/arm/mach-omap2/omap4-restart.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/arch/arm/mach-omap2/omap4-restart.c	2026-06-07 09:06:50
 @@ -5,9 +5,45 @@
  
  #include <linux/types.h>
@@ -325,8 +327,9 @@
 +	omap44xx_save_reboot_cmd(cmd);
  	omap_prm_reset_system();
  }
---- build/patch-pristine/linux-6.6.142/drivers/clk/ti/clk-44xx.c
-+++ kernel/linux-6.6.142/drivers/clk/ti/clk-44xx.c
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/clk/ti/clk-44xx.c kernel/linux-6.6.142/drivers/clk/ti/clk-44xx.c
+--- build/patch-pristine/linux-6.6.142/drivers/clk/ti/clk-44xx.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/drivers/clk/ti/clk-44xx.c	2026-06-16 00:48:33
 @@ -12,6 +12,7 @@
  #include <linux/clk.h>
  #include <linux/clkdev.h>
@@ -370,8 +373,9 @@
  	abe_dpll = clk_get_sys(NULL, "dpll_abe_ck");
  	if (!rc)
  		rc = clk_set_rate(abe_dpll, OMAP4_DPLL_ABE_DEFFREQ);
---- build/patch-pristine/linux-6.6.142/drivers/clk/ti/composite.c
-+++ kernel/linux-6.6.142/drivers/clk/ti/composite.c
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/clk/ti/composite.c kernel/linux-6.6.142/drivers/clk/ti/composite.c
+--- build/patch-pristine/linux-6.6.142/drivers/clk/ti/composite.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/drivers/clk/ti/composite.c	2026-06-07 11:03:10
 @@ -29,13 +29,13 @@
  static long ti_composite_round_rate(struct clk_hw *hw, unsigned long rate,
  				    unsigned long *prate)
@@ -388,8 +392,9 @@
  }
  
  static const struct clk_ops ti_composite_divider_ops = {
---- build/patch-pristine/linux-6.6.142/drivers/dma/ti/omap-dma.c
-+++ kernel/linux-6.6.142/drivers/dma/ti/omap-dma.c
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/dma/ti/omap-dma.c kernel/linux-6.6.142/drivers/dma/ti/omap-dma.c
+--- build/patch-pristine/linux-6.6.142/drivers/dma/ti/omap-dma.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/drivers/dma/ti/omap-dma.c	2026-06-15 21:48:25
 @@ -8,8 +8,10 @@
  #include <linux/dma-mapping.h>
  #include <linux/dmapool.h>
@@ -693,7 +698,7 @@
  	[CSDP_DATA_TYPE_16] = 2,
  	[CSDP_DATA_TYPE_32] = 4,
  };
-+
+ 
 +static const s16 omap_dma_nq_sine256[] = {
 +	     0,    804,   1608,   2410,   3212,   4011,   4808,   5602,
 +	  6393,   7179,   7962,   8739,   9512,  10278,  11039,  11793,
@@ -783,7 +788,7 @@
 +		return false;
 +	if (es != CSDP_DATA_TYPE_16)
 +		return false;
- 
++
 +	return true;
 +}
 +
@@ -1278,14 +1283,10 @@
  	if (channel >= od->lch_count)
  		goto out_busy;
  	set_bit(channel, od->lch_bitmap);
-@@ -687,7 +1461,48 @@
- out_busy:
- 	mutex_unlock(&od->lch_lock);
- 	*lch = -EINVAL;
-+
-+	return -EBUSY;
-+}
-+
+@@ -691,6 +1465,47 @@
+ 	return -EBUSY;
+ }
+ 
 +static int omap_dma_get_lch_exact(struct omap_dmadev *od, int channel, int *lch)
 +{
 +	if (channel < 0 || channel >= od->lch_count) {
@@ -1312,7 +1313,7 @@
 +	 */
 +	set_bit(channel, od->lch_bitmap);
 +	mutex_unlock(&od->lch_lock);
- 
++
 +	*lch = channel;
 +	return 0;
 +
@@ -1324,9 +1325,12 @@
 +		 od->lch_map[channel] ? od->lch_map[channel]->dma_sig : 0);
 +	mutex_unlock(&od->lch_lock);
 +	*lch = -EINVAL;
- 	return -EBUSY;
- }
- 
++	return -EBUSY;
++}
++
+ static void omap_dma_put_lch(struct omap_dmadev *od, int lch)
+ {
+ 	omap_dma_clear_lch(od, lch);
 @@ -714,14 +1529,26 @@
  	if (omap_dma_legacy(od)) {
  		ret = omap_request_dma(c->dma_sig, "DMA engine",
@@ -1524,8 +1528,711 @@
  		od->ddev.residue_granularity =
  				DMA_RESIDUE_GRANULARITY_DESCRIPTOR;
  	else
---- build/patch-pristine/linux-6.6.142/sound/soc/codecs/tas571x.c
-+++ kernel/linux-6.6.142/sound/soc/codecs/tas571x.c
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/input/misc/Kconfig kernel/linux-6.6.142/drivers/input/misc/Kconfig
+--- build/patch-pristine/linux-6.6.142/drivers/input/misc/Kconfig	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/drivers/input/misc/Kconfig	2026-06-19 09:40:46
+@@ -119,6 +119,20 @@
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called atmel_captouch.
+ 
++config INPUT_STEELHEAD_AVR
++	tristate "Google Nexus Q / Steelhead AVR front panel"
++	depends on I2C
++	depends on GPIOLIB || COMPILE_TEST
++	help
++	  Say Y here to support the Google Nexus Q front panel AVR.
++
++	  The AVR reports the capacitive mute and volume controls over an
++	  I2C event FIFO. This driver exposes those controls as standard
++	  Linux input key events.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called steelhead_avr.
++
+ config INPUT_BBNSM_PWRKEY
+ 	tristate "NXP BBNSM Power Key Driver"
+ 	depends on ARCH_MXC || COMPILE_TEST
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/input/misc/Makefile kernel/linux-6.6.142/drivers/input/misc/Makefile
+--- build/patch-pristine/linux-6.6.142/drivers/input/misc/Makefile	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/drivers/input/misc/Makefile	2026-06-19 09:41:01
+@@ -21,6 +21,7 @@
+ obj-$(CONFIG_INPUT_ATI_REMOTE2)		+= ati_remote2.o
+ obj-$(CONFIG_INPUT_ATLAS_BTNS)		+= atlas_btns.o
+ obj-$(CONFIG_INPUT_ATMEL_CAPTOUCH)	+= atmel_captouch.o
++obj-$(CONFIG_INPUT_STEELHEAD_AVR)	+= steelhead_avr.o
+ obj-$(CONFIG_INPUT_BBNSM_PWRKEY)	+= nxp-bbnsm-pwrkey.o
+ obj-$(CONFIG_INPUT_BMA150)		+= bma150.o
+ obj-$(CONFIG_INPUT_CM109)		+= cm109.o
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/input/misc/steelhead_avr.c kernel/linux-6.6.142/drivers/input/misc/steelhead_avr.c
+--- build/patch-pristine/linux-6.6.142/drivers/input/misc/steelhead_avr.c	1969-12-31 16:00:00
++++ kernel/linux-6.6.142/drivers/input/misc/steelhead_avr.c	2026-06-19 10:08:30
+@@ -0,0 +1,308 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Google Nexus Q / Steelhead AVR front panel input driver.
++ *
++ * The front panel ATmega328P reports debounced capacitive controls over an
++ * I2C event FIFO. This driver exposes those controls as normal evdev keys.
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/input.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/workqueue.h>
++
++#define STEELHEAD_AVR_KEY_EVENT_FIFO	0x00
++#define STEELHEAD_AVR_KEY_EVENT_DOWN	0x80
++#define STEELHEAD_AVR_KEY_EVENT_MASK	0x3f
++#define STEELHEAD_AVR_KEY_EVENT_RESET	0xfe
++#define STEELHEAD_AVR_KEY_EVENT_EMPTY	0xff
++
++#define STEELHEAD_AVR_FW_VERSION	0x0a
++
++#define STEELHEAD_AVR_KEY_MUTE		0x00
++#define STEELHEAD_AVR_KEY_VOLUME_UP	0x01
++#define STEELHEAD_AVR_KEY_VOLUME_DOWN	0x02
++
++#define STEELHEAD_AVR_MAX_EVENTS	64
++#define STEELHEAD_AVR_I2C_ATTEMPTS	5
++#define STEELHEAD_AVR_DEFAULT_POLL_MS	50
++
++static unsigned int poll_ms = STEELHEAD_AVR_DEFAULT_POLL_MS;
++module_param(poll_ms, uint, 0644);
++MODULE_PARM_DESC(poll_ms,
++		 "Polling interval in ms when no IRQ is provided; 0 disables polling");
++
++struct steelhead_avr {
++	struct device *dev;
++	struct i2c_client *client;
++	struct input_dev *input;
++	struct gpio_desc *reset_gpio;
++	struct delayed_work poll_work;
++	bool polling;
++};
++
++static const unsigned short steelhead_avr_keymap[] = {
++	[STEELHEAD_AVR_KEY_MUTE] = KEY_MUTE,
++	[STEELHEAD_AVR_KEY_VOLUME_UP] = KEY_VOLUMEUP,
++	[STEELHEAD_AVR_KEY_VOLUME_DOWN] = KEY_VOLUMEDOWN,
++};
++
++static void steelhead_avr_drain_events(struct steelhead_avr *avr);
++
++static int steelhead_avr_read(struct steelhead_avr *avr, u8 reg, u8 *buf,
++			      size_t len)
++{
++	struct i2c_client *client = avr->client;
++	int ret = 0;
++	int try;
++
++	for (try = 0; try < STEELHEAD_AVR_I2C_ATTEMPTS; try++) {
++		ret = i2c_smbus_write_byte(client, reg);
++		if (!ret)
++			break;
++		usleep_range(1000, 2000);
++	}
++	if (ret)
++		return ret;
++
++	/*
++	 * The legacy driver found that the AVR needs a small settling delay
++	 * between selecting the register and reading its payload. Without it
++	 * the transaction can succeed electrically while returning bad data.
++	 */
++	usleep_range(50, 100);
++
++	for (try = 0; try < STEELHEAD_AVR_I2C_ATTEMPTS; try++) {
++		ret = i2c_master_recv(client, buf, len);
++		if (ret == len)
++			return 0;
++		if (ret < 0)
++			usleep_range(1000, 2000);
++	}
++
++	return ret < 0 ? ret : -EIO;
++}
++
++static int steelhead_avr_read_event(struct steelhead_avr *avr, u8 *event)
++{
++	return steelhead_avr_read(avr, STEELHEAD_AVR_KEY_EVENT_FIFO, event, 1);
++}
++
++static void steelhead_avr_report_event(struct steelhead_avr *avr, u8 event)
++{
++	unsigned int key;
++	bool down;
++
++	if (event == STEELHEAD_AVR_KEY_EVENT_RESET) {
++		dev_info(avr->dev, "front panel AVR reset notification\n");
++		return;
++	}
++
++	down = event & STEELHEAD_AVR_KEY_EVENT_DOWN;
++	event &= STEELHEAD_AVR_KEY_EVENT_MASK;
++
++	if (event >= ARRAY_SIZE(steelhead_avr_keymap) ||
++	    !steelhead_avr_keymap[event]) {
++		dev_dbg(avr->dev, "ignoring unknown key event 0x%02x\n", event);
++		return;
++	}
++
++	key = steelhead_avr_keymap[event];
++	input_event(avr->input, EV_MSC, MSC_SCAN, event);
++	input_report_key(avr->input, key, down);
++	input_sync(avr->input);
++}
++
++static irqreturn_t steelhead_avr_irq_thread(int irq, void *data)
++{
++	struct steelhead_avr *avr = data;
++
++	steelhead_avr_drain_events(avr);
++
++	return IRQ_HANDLED;
++}
++
++static void steelhead_avr_drain_events(struct steelhead_avr *avr)
++{
++	int i;
++
++	for (i = 0; i < STEELHEAD_AVR_MAX_EVENTS; i++) {
++		u8 event = STEELHEAD_AVR_KEY_EVENT_EMPTY;
++		int ret;
++
++		ret = steelhead_avr_read_event(avr, &event);
++		if (ret) {
++			dev_err_ratelimited(avr->dev,
++					    "failed to read event FIFO: %d\n",
++					    ret);
++			break;
++		}
++
++		if (event == STEELHEAD_AVR_KEY_EVENT_EMPTY)
++			break;
++
++		steelhead_avr_report_event(avr, event);
++	}
++
++	if (i == STEELHEAD_AVR_MAX_EVENTS)
++		dev_warn_ratelimited(avr->dev, "event FIFO did not drain\n");
++}
++
++static void steelhead_avr_poll_work(struct work_struct *work)
++{
++	struct steelhead_avr *avr =
++		container_of(to_delayed_work(work), struct steelhead_avr,
++			     poll_work);
++
++	steelhead_avr_drain_events(avr);
++
++	if (poll_ms)
++		schedule_delayed_work(&avr->poll_work,
++				      msecs_to_jiffies(poll_ms));
++}
++
++static int steelhead_avr_hw_init(struct steelhead_avr *avr)
++{
++	u8 version[2];
++	int ret;
++
++	if (avr->reset_gpio) {
++		gpiod_set_value_cansleep(avr->reset_gpio, 0);
++		msleep(20);
++	}
++
++	ret = steelhead_avr_read(avr, STEELHEAD_AVR_FW_VERSION, version,
++				 sizeof(version));
++	if (ret)
++		return dev_err_probe(avr->dev, ret,
++				     "failed to read firmware version\n");
++
++	dev_info(avr->dev, "front panel AVR firmware %u.%u\n",
++		 version[0], version[1]);
++
++	return 0;
++}
++
++static int steelhead_avr_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct steelhead_avr *avr;
++	struct input_dev *input;
++	int irq;
++	int i;
++	int ret;
++
++	avr = devm_kzalloc(dev, sizeof(*avr), GFP_KERNEL);
++	if (!avr)
++		return -ENOMEM;
++
++	avr->dev = dev;
++	avr->client = client;
++	i2c_set_clientdata(client, avr);
++
++	avr->reset_gpio = devm_gpiod_get_optional(dev, "reset",
++						  GPIOD_OUT_LOW);
++	if (IS_ERR(avr->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(avr->reset_gpio),
++				     "failed to get reset GPIO\n");
++
++	irq = client->irq;
++	if (irq <= 0) {
++		struct gpio_desc *irq_gpio;
++
++		irq_gpio = devm_gpiod_get_optional(dev, "interrupt", GPIOD_IN);
++		if (IS_ERR(irq_gpio))
++			return dev_err_probe(dev, PTR_ERR(irq_gpio),
++					     "failed to get interrupt GPIO\n");
++		if (irq_gpio) {
++			irq = gpiod_to_irq(irq_gpio);
++			if (irq < 0)
++				return dev_err_probe(dev, irq,
++						     "failed to map IRQ\n");
++		}
++	}
++
++	input = devm_input_allocate_device(dev);
++	if (!input)
++		return -ENOMEM;
++
++	avr->input = input;
++	input->name = "Steelhead Front Panel";
++	input->phys = "steelhead-avr/input0";
++	input->id.bustype = BUS_I2C;
++	input->id.vendor = 0x18d1;
++	input->id.product = 0x4e23;
++	input->id.version = 0x0001;
++
++	input_set_capability(input, EV_MSC, MSC_SCAN);
++	for (i = 0; i < ARRAY_SIZE(steelhead_avr_keymap); i++)
++		input_set_capability(input, EV_KEY, steelhead_avr_keymap[i]);
++
++	ret = steelhead_avr_hw_init(avr);
++	if (ret)
++		return ret;
++
++	if (irq > 0) {
++		ret = devm_request_threaded_irq(dev, irq, NULL,
++						steelhead_avr_irq_thread,
++						IRQF_ONESHOT | IRQF_TRIGGER_LOW,
++						"steelhead-avr", avr);
++		if (ret)
++			return dev_err_probe(dev, ret, "failed to request IRQ\n");
++	} else if (poll_ms) {
++		INIT_DELAYED_WORK(&avr->poll_work, steelhead_avr_poll_work);
++		avr->polling = true;
++		schedule_delayed_work(&avr->poll_work,
++				      msecs_to_jiffies(poll_ms));
++		dev_info(dev, "no IRQ provided; polling every %u ms\n",
++			 poll_ms);
++	} else {
++		return dev_err_probe(dev, -ENXIO, "missing IRQ and polling disabled\n");
++	}
++
++	ret = input_register_device(input);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register input\n");
++
++	dev_info(dev, "Steelhead front panel input ready\n");
++
++	return 0;
++}
++
++static void steelhead_avr_remove(struct i2c_client *client)
++{
++	struct steelhead_avr *avr = i2c_get_clientdata(client);
++
++	if (avr && avr->polling)
++		cancel_delayed_work_sync(&avr->poll_work);
++}
++
++static const struct of_device_id steelhead_avr_of_match[] = {
++	{ .compatible = "google,steelhead-avr" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, steelhead_avr_of_match);
++
++static const struct i2c_device_id steelhead_avr_id[] = {
++	{ "steelhead-avr" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, steelhead_avr_id);
++
++static struct i2c_driver steelhead_avr_driver = {
++	.driver = {
++		.name = "steelhead-avr",
++		.of_match_table = steelhead_avr_of_match,
++	},
++	.probe = steelhead_avr_probe,
++	.remove = steelhead_avr_remove,
++	.id_table = steelhead_avr_id,
++};
++module_i2c_driver(steelhead_avr_driver);
++
++MODULE_DESCRIPTION("Google Nexus Q / Steelhead AVR front panel input driver");
++MODULE_AUTHOR("Google, Inc.; Nexus Q revival contributors");
++MODULE_LICENSE("GPL");
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts kernel/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts
+--- build/patch-pristine/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts	1969-12-31 16:00:00
++++ kernel/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts	2026-06-19 10:01:04
+@@ -0,0 +1,268 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/dts-v1/;
++
++#include "omap4460.dtsi"
++#include "elpida_ecb240abacn.dtsi"
++
++/ {
++	model = "Google Nexus Q / Steelhead";
++	compatible = "google,steelhead", "ti,omap4460", "ti,omap4430", "ti,omap4";
++
++	memory@80000000 {
++		device_type = "memory";
++		reg = <0x80000000 0x40000000>;
++	};
++
++	chosen {
++		bootargs = "console=ttyO2,115200n8 earlyprintk ignore_loglevel root=/dev/ram0 rdinit=/init init=/init";
++		stdout-path = &uart3;
++	};
++
++	tas5713_iface: regulator-tas5713-interface {
++		compatible = "regulator-fixed";
++		regulator-name = "tas5713-interface";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		gpio = <&gpio2 8 GPIO_ACTIVE_HIGH>;		/* gpio_40 */
++		enable-active-high;
++		regulator-boot-on;
++		regulator-always-on;
++		startup-delay-us = <10000>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&tas5713_gpio_pins>;
++	};
++
++	wlan_vmmc: regulator-wlan-vmmc {
++		compatible = "regulator-fixed";
++		regulator-name = "wlan-vmmc";
++		regulator-min-microvolt = <3000000>;
++		regulator-max-microvolt = <3000000>;
++		gpio = <&gpio2 11 GPIO_ACTIVE_HIGH>;		/* gpio_43 */
++		enable-active-high;
++		regulator-boot-on;
++		startup-delay-us = <500000>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&wlan_gpio_pins>;
++	};
++
++	sound_tas5713: sound-tas5713 {
++		compatible = "google,steelhead-tas5713";
++		ti,model = "Steelhead TAS5713";
++		pinctrl-names = "default";
++		pinctrl-0 = <&tas5713_mclk_pins>;
++		google,mcbsp = <&mcbsp2>;
++		google,audio-codec = <&tas5713>;
++		clocks = <&auxclk1_ck>,
++			 <&abe_clkctrl OMAP4_MCBSP2_CLKCTRL 26>,
++			 <&abe_24m_fclk>;
++		clock-names = "codec-mclk", "mcbsp-sync", "mcbsp-parent";
++	};
++};
++
++&omap4_pmx_core {
++	i2c1_pins: i2c1-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x122, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c1_scl */
++			OMAP4_IOPAD(0x124, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c1_sda */
++		>;
++	};
++
++	i2c4_pins: i2c4-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x12e, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c4_scl */
++			OMAP4_IOPAD(0x130, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c4_sda */
++		>;
++	};
++
++	mcbsp2_pins: mcbsp2-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x0f6, PIN_OUTPUT | MUX_MODE0)		/* abe_mcbsp2_clkx */
++			OMAP4_IOPAD(0x0f8, PIN_INPUT_PULLDOWN | MUX_MODE0)	/* abe_mcbsp2_dr */
++			OMAP4_IOPAD(0x0fa, PIN_OUTPUT | MUX_MODE0)		/* abe_mcbsp2_dx */
++			OMAP4_IOPAD(0x0fc, PIN_OUTPUT | MUX_MODE0)		/* abe_mcbsp2_fsx */
++		>;
++	};
++
++	tas5713_gpio_pins: tas5713-gpio-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x060, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a16.gpio_40 */
++			OMAP4_IOPAD(0x064, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a18.gpio_42 */
++			OMAP4_IOPAD(0x068, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a20.gpio_44 */
++		>;
++	};
++
++	tas5713_mclk_pins: tas5713-mclk-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x19a, PIN_OUTPUT | MUX_MODE0)		/* fref_clk1_out */
++		>;
++	};
++
++	wlan_gpio_pins: wlan-gpio-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x066, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a19.gpio_43 */
++			OMAP4_IOPAD(0x07a, PIN_INPUT | MUX_MODE3)		/* gpmc_ncs3.gpio_53 */
++		>;
++	};
++
++	mmc5_pins: mmc5-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x148, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_clk */
++			OMAP4_IOPAD(0x14a, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_cmd */
++			OMAP4_IOPAD(0x14c, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_dat0 */
++			OMAP4_IOPAD(0x14e, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_dat1 */
++			OMAP4_IOPAD(0x150, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_dat2 */
++			OMAP4_IOPAD(0x152, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_dat3 */
++		>;
++	};
++};
++
++&i2c1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c1_pins>;
++	clock-frequency = <400000>;
++
++	twl: twl@48 {
++		reg = <0x48>;
++		interrupts = <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>;
++	};
++};
++
++#include "twl6030.dtsi"
++#include "twl6030_omap4.dtsi"
++
++&dpll_per_m3x2_ck {
++	assigned-clocks = <&dpll_per_m3x2_ck>;
++	assigned-clock-rates = <61440000>;
++};
++
++&auxclk1_src_ck {
++	assigned-clocks = <&auxclk1_src_ck>;
++	assigned-clock-parents = <&dpll_per_m3x2_ck>;
++};
++
++&auxclk1_ck {
++	assigned-clocks = <&auxclk1_ck>;
++	assigned-clock-rates = <12288000>;
++};
++
++&vaux1 {
++	regulator-min-microvolt = <3000000>;
++	regulator-max-microvolt = <3000000>;
++	regulator-always-on;
++};
++
++&vmmc {
++	regulator-min-microvolt = <3000000>;
++	regulator-max-microvolt = <3000000>;
++};
++
++&vcxio {
++	regulator-min-microvolt = <1800000>;
++	regulator-max-microvolt = <1800000>;
++	regulator-always-on;
++};
++
++&vana {
++	regulator-min-microvolt = <2100000>;
++	regulator-max-microvolt = <2100000>;
++	regulator-always-on;
++};
++
++&vusb {
++	regulator-min-microvolt = <3300000>;
++	regulator-max-microvolt = <3300000>;
++};
++
++&twl_usb_comparator {
++	usb-supply = <&vusb>;
++};
++
++&mmc1 {
++	vmmc-supply = <&vmmc>;
++	bus-width = <8>;
++	non-removable;
++	no-1-8-v;
++	status = "okay";
++};
++
++&mmc2 {
++	status = "disabled";
++};
++
++&mmc3 {
++	status = "disabled";
++};
++
++&mmc4 {
++	status = "disabled";
++};
++
++&mmc5 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&mmc5_pins>;
++	vmmc-supply = <&wlan_vmmc>;
++	bus-width = <4>;
++	non-removable;
++	cap-power-off-card;
++	keep-power-in-suspend;
++	status = "okay";
++
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	wifi@1 {
++		compatible = "brcm,bcm4330-fmac", "brcm,bcm4329-fmac";
++		reg = <1>;
++		interrupts-extended = <&gpio2 21 IRQ_TYPE_LEVEL_HIGH>;	/* gpio_53 */
++		interrupt-names = "host-wake";
++		brcm,board-type = "google,steelhead";
++		brcm,drive-strength = <12>;
++	};
++};
++
++&i2c4 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c4_pins>;
++	clock-frequency = <400000>;
++	status = "okay";
++
++	tas5713: audio-codec@1b {
++		compatible = "google,steelhead-tas5713-codec", "ti,tas5711";
++		reg = <0x1b>;
++		#sound-dai-cells = <0>;
++
++		reset-gpios = <&gpio2 10 GPIO_ACTIVE_LOW>;	/* gpio_42 */
++		pdn-gpios = <&gpio2 12 GPIO_ACTIVE_LOW>;		/* gpio_44 */
++		clocks = <&auxclk1_ck>;
++		clock-names = "mclk";
++
++		AVDD-supply = <&tas5713_iface>;
++		DVDD-supply = <&tas5713_iface>;
++		PVDD_A-supply = <&tas5713_iface>;
++		PVDD_B-supply = <&tas5713_iface>;
++		PVDD_C-supply = <&tas5713_iface>;
++		PVDD_D-supply = <&tas5713_iface>;
++	};
++};
++
++&mcbsp2 {
++	#sound-dai-cells = <0>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&mcbsp2_pins>;
++	assigned-clocks = <&abe_clkctrl OMAP4_MCBSP2_CLKCTRL 26>;
++	assigned-clock-parents = <&abe_24m_fclk>;
++	status = "okay";
++};
++
++&uart3 {
++	interrupts-extended = <&wakeupgen GIC_SPI 74 IRQ_TYPE_LEVEL_HIGH
++			       &omap4_pmx_core OMAP4_UART3_RX>;
++	status = "okay";
++};
++
++&usb_otg_hs {
++	interface-type = <1>;
++	mode = <2>;
++	power = <500>;
++	status = "okay";
++};
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/scripts/mod/file2alias.c kernel/linux-6.6.142/scripts/mod/file2alias.c
+--- build/patch-pristine/linux-6.6.142/scripts/mod/file2alias.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/scripts/mod/file2alias.c	2026-06-06 22:02:04
+@@ -31,6 +31,10 @@
+ #include <ctype.h>
+ #include <stdbool.h>
+ 
++#ifdef __APPLE__
++#define uuid_t linux_uuid_t
++#endif
++
+ typedef uint32_t	__u32;
+ typedef uint16_t	__u16;
+ typedef unsigned char	__u8;
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/core/pcm_dmaengine.c kernel/linux-6.6.142/sound/core/pcm_dmaengine.c
+--- build/patch-pristine/linux-6.6.142/sound/core/pcm_dmaengine.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/sound/core/pcm_dmaengine.c	2026-06-13 16:15:55
+@@ -13,6 +13,7 @@
+ #include <linux/init.h>
+ #include <linux/dmaengine.h>
+ #include <linux/slab.h>
++#include <linux/workqueue.h>
+ #include <sound/pcm.h>
+ #include <sound/pcm_params.h>
+ #include <sound/soc.h>
+@@ -22,6 +23,8 @@
+ struct dmaengine_pcm_runtime_data {
+ 	struct dma_chan *dma_chan;
+ 	dma_cookie_t cookie;
++	struct snd_pcm_substream *substream;
++	struct work_struct period_elapsed_work;
+ 
+ 	unsigned int pos;
+ };
+@@ -142,9 +145,21 @@
+ 		new_pos = 0;
+ 	prtd->pos = new_pos;
+ 
+-	snd_pcm_period_elapsed(substream);
++	if (substream->pcm->nonatomic)
++		schedule_work(&prtd->period_elapsed_work);
++	else
++		snd_pcm_period_elapsed(substream);
+ }
+ 
++static void dmaengine_pcm_period_elapsed_work(struct work_struct *work)
++{
++	struct dmaengine_pcm_runtime_data *prtd =
++		container_of(work, struct dmaengine_pcm_runtime_data,
++			     period_elapsed_work);
++
++	snd_pcm_period_elapsed(prtd->substream);
++}
++
+ static int dmaengine_pcm_prepare_and_submit(struct snd_pcm_substream *substream)
+ {
+ 	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
+@@ -321,6 +336,9 @@
+ 		return -ENOMEM;
+ 
+ 	prtd->dma_chan = chan;
++	prtd->substream = substream;
++	INIT_WORK(&prtd->period_elapsed_work,
++		  dmaengine_pcm_period_elapsed_work);
+ 
+ 	substream->runtime->private_data = prtd;
+ 
+@@ -380,6 +398,7 @@
+ 		dmaengine_terminate_async(prtd->dma_chan);
+ 
+ 	dmaengine_synchronize(prtd->dma_chan);
++	cancel_work_sync(&prtd->period_elapsed_work);
+ 	kfree(prtd);
+ 
+ 	return 0;
+@@ -406,6 +425,7 @@
+ 		dmaengine_terminate_async(prtd->dma_chan);
+ 
+ 	dmaengine_synchronize(prtd->dma_chan);
++	cancel_work_sync(&prtd->period_elapsed_work);
+ 	dma_release_channel(prtd->dma_chan);
+ 	kfree(prtd);
+ 
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/soc/codecs/tas571x.c kernel/linux-6.6.142/sound/soc/codecs/tas571x.c
+--- build/patch-pristine/linux-6.6.142/sound/soc/codecs/tas571x.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/sound/soc/codecs/tas571x.c	2026-06-15 23:47:07
 @@ -18,12 +18,15 @@
  #include <linux/gpio/consumer.h>
  #include <linux/i2c.h>
@@ -2619,18 +3326,10 @@
  		break;
  	}
  
-@@ -436,12 +1400,109 @@
+@@ -444,6 +1408,103 @@
+ 	.vol_reg_size			= 1,
  };
  
- static const struct tas571x_chip tas5711_chip = {
-+	.supply_names			= tas5711_supply_names,
-+	.num_supply_names		= ARRAY_SIZE(tas5711_supply_names),
-+	.controls			= tas5711_controls,
-+	.num_controls			= ARRAY_SIZE(tas5711_controls),
-+	.regmap_config			= &tas5711_regmap_config,
-+	.vol_reg_size			= 1,
-+};
-+
 +static const struct tas571x_raw_init steelhead_tas5713_init_sequence[] = {
 +	TAS571X_RAW_INIT(0x07, 0xff),
 +	TAS571X_RAW_INIT(0x03, 0x80),
@@ -2714,21 +3413,23 @@
 +};
 +
 +static const struct tas571x_chip steelhead_tas5713_chip = {
- 	.supply_names			= tas5711_supply_names,
- 	.num_supply_names		= ARRAY_SIZE(tas5711_supply_names),
- 	.controls			= tas5711_controls,
- 	.num_controls			= ARRAY_SIZE(tas5711_controls),
- 	.regmap_config			= &tas5711_regmap_config,
- 	.vol_reg_size			= 1,
++	.supply_names			= tas5711_supply_names,
++	.num_supply_names		= ARRAY_SIZE(tas5711_supply_names),
++	.controls			= tas5711_controls,
++	.num_controls			= ARRAY_SIZE(tas5711_controls),
++	.regmap_config			= &tas5711_regmap_config,
++	.vol_reg_size			= 1,
 +	.legacy_power_sequence		= true,
 +	.legacy_stream_reinit		= false,
 +	.keep_mclk_after_init		= true,
 +	.shutdown_delay_us		= TAS571X_STEELHEAD_SHUTDOWN_DELAY_US,
 +	.init_sequence			= steelhead_tas5713_init_sequence,
 +	.num_init_sequence		= ARRAY_SIZE(steelhead_tas5713_init_sequence),
- };
- 
++};
++
  static const struct regmap_range tas5707_volatile_regs_range[] = {
+ 	regmap_reg_range(TAS571X_CLK_CTRL_REG,  TAS571X_ERR_STATUS_REG),
+ 	regmap_reg_range(TAS571X_OSC_TRIM_REG,  TAS571X_OSC_TRIM_REG),
 @@ -837,12 +1898,20 @@
  	struct tas571x_private *priv;
  	struct device *dev = &client->dev;
@@ -2873,8 +3574,21 @@
  	{ .compatible = "ti,tas5707", .data = &tas5707_chip, },
  	{ .compatible = "ti,tas5711", .data = &tas5711_chip, },
  	{ .compatible = "ti,tas5717", .data = &tas5717_chip, },
---- build/patch-pristine/linux-6.6.142/sound/soc/ti/Kconfig
-+++ kernel/linux-6.6.142/sound/soc/ti/Kconfig
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/soc/codecs/tas571x.h kernel/linux-6.6.142/sound/soc/codecs/tas571x.h
+--- build/patch-pristine/linux-6.6.142/sound/soc/codecs/tas571x.h	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/sound/soc/codecs/tas571x.h	2026-06-13 05:25:44
+@@ -47,6 +47,8 @@
+ #define TAS571X_INPUT_MUX_REG		0x20
+ #define TAS571X_CH4_SRC_SELECT_REG	0x21
+ #define TAS571X_PWM_MUX_REG		0x25
++#define TAS571X_OUTPUT_POST_SCALE_REG	0x56
++#define TAS571X_OUTPUT_PRE_SCALE_REG	0x57
+ 
+ /* 20-byte biquad registers */
+ #define TAS5707_CH1_BQ0_REG		0x29
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/soc/ti/Kconfig kernel/linux-6.6.142/sound/soc/ti/Kconfig
+--- build/patch-pristine/linux-6.6.142/sound/soc/ti/Kconfig	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/sound/soc/ti/Kconfig	2026-06-07 10:45:59
 @@ -123,6 +123,16 @@
  	  - PandaBoardES (4460)
  	  - OMAP5 uEVM
@@ -2897,8 +3611,9 @@
  	  Processor Board and Infotainment expansion board.
  endmenu
 -
---- build/patch-pristine/linux-6.6.142/sound/soc/ti/Makefile
-+++ kernel/linux-6.6.142/sound/soc/ti/Makefile
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/soc/ti/Makefile kernel/linux-6.6.142/sound/soc/ti/Makefile
+--- build/patch-pristine/linux-6.6.142/sound/soc/ti/Makefile	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/sound/soc/ti/Makefile	2026-06-07 10:45:59
 @@ -29,6 +29,7 @@
  snd-soc-omap3pandora-objs := omap3pandora.o
  snd-soc-omap-twl4030-objs := omap-twl4030.o
@@ -2915,8 +3630,9 @@
  obj-$(CONFIG_SND_SOC_OMAP_AMS_DELTA) += snd-soc-ams-delta.o
  obj-$(CONFIG_SND_SOC_OMAP_HDMI) += snd-soc-omap-hdmi.o
  obj-$(CONFIG_SND_SOC_OMAP_OSK5912) += snd-soc-osk5912.o
---- build/patch-pristine/linux-6.6.142/sound/soc/ti/omap-mcbsp-priv.h
-+++ kernel/linux-6.6.142/sound/soc/ti/omap-mcbsp-priv.h
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/soc/ti/omap-mcbsp-priv.h kernel/linux-6.6.142/sound/soc/ti/omap-mcbsp-priv.h
+--- build/patch-pristine/linux-6.6.142/sound/soc/ti/omap-mcbsp-priv.h	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/sound/soc/ti/omap-mcbsp-priv.h	2026-06-15 23:32:58
 @@ -9,8 +9,13 @@
  #ifndef __OMAP_MCBSP_PRIV_H__
  #define __OMAP_MCBSP_PRIV_H__
@@ -2931,20 +3647,18 @@
  #ifdef CONFIG_ARCH_OMAP1
  #define mcbsp_omap1()	1
  #else
-@@ -234,8 +239,21 @@
- 	u16 xcerh;
- 	u16 xccr;
+@@ -236,6 +241,19 @@
  	u16 rccr;
-+};
-+
+ };
+ 
 +struct omap_mcbsp_nq_fifo_trace_sample {
 +	u32 elapsed_us;
 +	u16 xbuffstat;
 +	u16 irqst;
 +	u16 spcr2;
 +	u16 xccr;
- };
- 
++};
++
 +struct omap_mcbsp_nq_dlb_block {
 +	u64 sumsq[2];
 +	u32 count[2];
@@ -2953,10 +3667,11 @@
  struct omap_mcbsp_st_data;
  
  struct omap_mcbsp {
-@@ -276,6 +294,71 @@
+@@ -275,6 +293,71 @@
+ 	unsigned int latency[2];
  	int clk_div;
  	int wlen;
- 
++
 +	spinlock_t nq_tx_substream_lock;
 +	struct snd_pcm_substream *nq_tx_substream;
 +	bool nq_threshold_valid[2];
@@ -3021,12 +3736,12 @@
 +	u32 nq_dlb_block_capacity;
 +	u32 nq_dlb_blocks_seen;
 +	u32 nq_dlb_blocks_dropped;
-+
+ 
  	struct pm_qos_request pm_qos_req;
  };
- 
---- build/patch-pristine/linux-6.6.142/sound/soc/ti/omap-mcbsp.c
-+++ kernel/linux-6.6.142/sound/soc/ti/omap-mcbsp.c
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/soc/ti/omap-mcbsp.c kernel/linux-6.6.142/sound/soc/ti/omap-mcbsp.c
+--- build/patch-pristine/linux-6.6.142/sound/soc/ti/omap-mcbsp.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/sound/soc/ti/omap-mcbsp.c	2026-06-15 23:35:03
 @@ -9,9 +9,18 @@
   */
  
@@ -3380,11 +4095,10 @@
  enum {
  	OMAP_MCBSP_WORD_8 = 0,
  	OMAP_MCBSP_WORD_12,
-@@ -35,24 +370,845 @@
- 	OMAP_MCBSP_WORD_24,
+@@ -36,23 +371,844 @@
  	OMAP_MCBSP_WORD_32,
  };
-+
+ 
 +static void omap_mcbsp_set_tx_threshold(struct omap_mcbsp *mcbsp,
 +					u16 threshold);
 +static void omap_mcbsp_nq_pio_fill(struct omap_mcbsp *mcbsp);
@@ -3452,7 +4166,7 @@
 +	dev_info(mcbsp->dev,
 +		 "nq pio detached %s deferred active=%d shutdown_deferred=%d\n",
 +		 phase, mcbsp->active, mcbsp->nq_pio_shutdown_deferred);
- 
++
 +	return true;
 +}
 +
@@ -4849,18 +5563,19 @@
  	platform_set_drvdata(pdev, mcbsp);
  
  	ret = omap_mcbsp_init(pdev);
-@@ -1418,6 +2914,9 @@
+@@ -1417,6 +2913,9 @@
+ static void asoc_mcbsp_remove(struct platform_device *pdev)
  {
  	struct omap_mcbsp *mcbsp = platform_get_drvdata(pdev);
- 
++
 +	omap_mcbsp_nq_pio_stop(mcbsp);
 +	cancel_work_sync(&mcbsp->nq_pio_cleanup_work);
-+
+ 
  	if (mcbsp->pdata->ops && mcbsp->pdata->ops->free)
  		mcbsp->pdata->ops->free(mcbsp->id);
- 
---- build/patch-pristine/linux-6.6.142/sound/soc/ti/sdma-pcm.c
-+++ kernel/linux-6.6.142/sound/soc/ti/sdma-pcm.c
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/soc/ti/sdma-pcm.c kernel/linux-6.6.142/sound/soc/ti/sdma-pcm.c
+--- build/patch-pristine/linux-6.6.142/sound/soc/ti/sdma-pcm.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/sound/soc/ti/sdma-pcm.c	2026-06-14 18:34:09
 @@ -5,6 +5,7 @@
   */
  
@@ -4894,7 +5609,7 @@
  	.period_bytes_min	= 32,
  	.period_bytes_max	= 64 * 1024,
  	.buffer_bytes_max	= 128 * 1024,
-@@ -33,23 +44,67 @@
+@@ -33,22 +44,66 @@
  	.prealloc_buffer_size = 128 * 1024,
  };
  
@@ -4957,15 +5672,15 @@
 +	ret = sdma_pcm_apply_nq_constraints(dev, config);
 +	if (ret)
 +		return ret;
- 
++
 +	if (!txdmachan && !rxdmachan)
 +		return devm_snd_dmaengine_pcm_register(dev, config, 0);
-+
+ 
  	if (!txdmachan || !rxdmachan) {
  		/* One direction only PCM */
- 		flags |= SND_DMAENGINE_PCM_FLAG_HALF_DUPLEX;
---- build/patch-pristine/linux-6.6.142/sound/soc/ti/steelhead-tas5713.c
-+++ kernel/linux-6.6.142/sound/soc/ti/steelhead-tas5713.c
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/sound/soc/ti/steelhead-tas5713.c kernel/linux-6.6.142/sound/soc/ti/steelhead-tas5713.c
+--- build/patch-pristine/linux-6.6.142/sound/soc/ti/steelhead-tas5713.c	1969-12-31 16:00:00
++++ kernel/linux-6.6.142/sound/soc/ti/steelhead-tas5713.c	2026-06-14 22:06:29
 @@ -0,0 +1,705 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*

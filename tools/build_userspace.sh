@@ -52,5 +52,9 @@ build \
 	-o artifacts/bin/reboot-bootloader \
 	tools/reboot_bootloader.c
 
+build \
+	-o artifacts/bin/nq-knob-volume \
+	tools/nq_knob_volume.c
+
 ls -l artifacts/bin/tinyplay artifacts/bin/nqstreamd artifacts/bin/tinymix \
-	artifacts/bin/reboot-bootloader
+	artifacts/bin/reboot-bootloader artifacts/bin/nq-knob-volume
