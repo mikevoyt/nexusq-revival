@@ -33,6 +33,11 @@ In Music Assistant, add or enable the `Squeezelite` player provider. The default
 SlimProto port is `3483`. If discovery does not work on your network, configure
 the Q with the server host explicitly.
 
+For the Nexus Q player, enable Queue Flow Mode and set Flow Mode sample rate to
+`48 kHz`. The current Linux 6.6 TAS5713 path is validated at 48 kHz; 44.1 kHz
+streams fail to derive a valid serial bit clock and must be resampled before
+they reach ALSA.
+
 ## Nexus Q Configuration
 
 Create a Squeezelite config on the running Q:
@@ -43,7 +48,8 @@ cat >/run/nexusq/squeezelite.env <<'EOF'
 NQ_SQUEEZELITE_ENABLE=1
 NQ_SQUEEZELITE_NAME='Nexus Q'
 NQ_SQUEEZELITE_OUTPUT=hw:0,0
-NQ_SQUEEZELITE_RATES=48000
+NQ_SQUEEZELITE_RATES=48000-48000
+NQ_SQUEEZELITE_RESAMPLE=hLX
 NQ_SQUEEZELITE_MASTER_VOLUME=190
 NQ_SQUEEZELITE_SPEAKER_VOLUME=204
 # Optional: bypass SlimProto discovery.
@@ -96,8 +102,11 @@ automatically.
 ## Current Caveats
 
 - Squeezelite startup is handled by `nq-init`, not by a normal systemd unit.
-- The default sample-rate advertisement is `48000` because `speaker-test` has
-  only been validated on the TAS5713 path at 48 kHz.
+- The default sample-rate advertisement is `48000-48000` because the TAS5713
+  path is currently validated only at 48 kHz.
+- `NQ_SQUEEZELITE_RESAMPLE=hLX` enables Squeezelite's SoX resampler as a
+  backstop. Music Assistant Queue Flow Mode at 48 kHz is still recommended so
+  the server sends a fixed-rate FLAC stream.
 - TAS5713 mixer values are raw ALSA control values, not linear loudness
   percentages. `NQ_SQUEEZELITE_MASTER_VOLUME=190` is about `-8.5 dB`; `207` is
   roughly 0 dB and should be treated as loud.

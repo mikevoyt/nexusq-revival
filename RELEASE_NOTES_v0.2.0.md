@@ -20,6 +20,9 @@ speaker playback.
   calibration extraction from stock Android `system`.
 - Included Dropbear SSH, OpenSSH SFTP server support, `mpg123`, `nq-play`, and
   opt-in Squeezelite endpoint support for Music Assistant experiments.
+- Validated Music Assistant streaming with the Q as a Squeezelite endpoint when
+  Music Assistant Queue Flow Mode is fixed to 48 kHz and the Q advertises
+  `48000-48000`.
 
 ## Flash Instructions
 
@@ -69,4 +72,4 @@ OMAP4 boards and applies a Steelhead-only `sys_clkin_ck` parent quirk.
 - Wi-Fi depends on stock `system` calibration or a user-provided NVRAM text
   file.
 - The internal speaker path is validated at 48 kHz; 44.1 kHz content should be
-  resampled by userspace.
+  resampled by userspace. For Music Assistant, enable Queue Flow Mode at 48 kHz.
