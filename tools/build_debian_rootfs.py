@@ -1003,7 +1003,8 @@ done
 : "${NQ_SQUEEZELITE_ENABLE:=0}"
 : "${NQ_SQUEEZELITE_NAME:=Nexus Q}"
 : "${NQ_SQUEEZELITE_OUTPUT:=hw:0,0}"
-: "${NQ_SQUEEZELITE_RATES:=48000}"
+: "${NQ_SQUEEZELITE_RATES:=48000-48000}"
+: "${NQ_SQUEEZELITE_RESAMPLE:=hLX}"
 : "${NQ_SQUEEZELITE_CLOSE_TIMEOUT:=5}"
 : "${NQ_SQUEEZELITE_MIXER_CARD:=0}"
 : "${NQ_SQUEEZELITE_MASTER_VOLUME:=190}"
@@ -1082,6 +1083,10 @@ set -- squeezelite \
 [ -z "$NQ_SQUEEZELITE_SERVER" ] || set -- "$@" -s "$NQ_SQUEEZELITE_SERVER"
 [ -z "$NQ_SQUEEZELITE_ALSA_PARAMS" ] || set -- "$@" -a "$NQ_SQUEEZELITE_ALSA_PARAMS"
 [ -z "$NQ_SQUEEZELITE_CODEC_LIST" ] || set -- "$@" -c "$NQ_SQUEEZELITE_CODEC_LIST"
+case "$NQ_SQUEEZELITE_RESAMPLE" in
+    ""|0|off|false|none) ;;
+    *) set -- "$@" -u "$NQ_SQUEEZELITE_RESAMPLE" ;;
+esac
 
 echo "[nq-squeezelite] exec: $*"
 "$@" &

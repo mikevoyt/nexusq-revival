@@ -80,7 +80,8 @@ cat >/run/nexusq/squeezelite.env <<'EOF'
 NQ_SQUEEZELITE_ENABLE=1
 NQ_SQUEEZELITE_NAME='Nexus Q'
 NQ_SQUEEZELITE_OUTPUT=hw:0,0
-NQ_SQUEEZELITE_RATES=48000
+NQ_SQUEEZELITE_RATES=48000-48000
+NQ_SQUEEZELITE_RESAMPLE=hLX
 NQ_SQUEEZELITE_MASTER_VOLUME=190
 NQ_SQUEEZELITE_SPEAKER_VOLUME=204
 # Optional if SlimProto discovery does not work:
@@ -102,6 +103,8 @@ cat /run/nexusq-squeezelite.log
 
 The TAS5713 volume controls use raw ALSA values. The default
 `NQ_SQUEEZELITE_MASTER_VOLUME=190` is about `-8.5 dB`; `207` is roughly 0 dB.
+In Music Assistant, enable Queue Flow Mode for the Q player and set the Flow
+Mode sample rate to 48 kHz.
 
 ## Local MP3 Test
 

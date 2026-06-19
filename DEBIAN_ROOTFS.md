@@ -114,8 +114,9 @@ Implications:
   debugging only. The public release uses
   `linux66/nexusq-linux66-wifi-public.fragment` and does not embed those files.
 - The current Steelhead TAS5713 audio path opens at 48 kHz/S16 stereo. Plain
-  44.1 kHz playback cannot be clocked by the current 6.6 patch; use `nq-play`
-  or Squeezelite's `-r 48000` configuration so userspace resamples.
+  44.1 kHz playback cannot be clocked by the current 6.6 patch; use `nq-play`,
+  Music Assistant Queue Flow Mode at 48 kHz, or Squeezelite's
+  `-r 48000-48000 -u hLX` configuration so userspace resamples.
 
 ## Secret Handling
 

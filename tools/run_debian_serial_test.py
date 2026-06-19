@@ -74,8 +74,13 @@ def main():
     )
     parser.add_argument(
         "--squeezelite-rates",
-        default=os.environ.get("NQ_SQUEEZELITE_RATES", "48000"),
-        help="comma-separated sample rates advertised by Squeezelite",
+        default=os.environ.get("NQ_SQUEEZELITE_RATES", "48000-48000"),
+        help="sample rates advertised by Squeezelite; use 48000-48000 for the current Q audio path",
+    )
+    parser.add_argument(
+        "--squeezelite-resample",
+        default=os.environ.get("NQ_SQUEEZELITE_RESAMPLE", "hLX"),
+        help="Squeezelite resampler recipe; set to none to disable",
     )
     parser.add_argument("--no-boot", action="store_true", help="use an already-booted serial shell")
     parser.add_argument("--boot-timeout", type=int, default=150)
@@ -167,6 +172,7 @@ def main():
                     f"NQ_SQUEEZELITE_NAME={shlex.quote(args.squeezelite_name)}\n",
                     f"NQ_SQUEEZELITE_OUTPUT={shlex.quote(args.squeezelite_output)}\n",
                     f"NQ_SQUEEZELITE_RATES={shlex.quote(args.squeezelite_rates)}\n",
+                    f"NQ_SQUEEZELITE_RESAMPLE={shlex.quote(args.squeezelite_resample)}\n",
                 ]
             )
             if args.squeezelite_server:
