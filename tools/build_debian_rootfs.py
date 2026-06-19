@@ -451,6 +451,18 @@ else
     echo "knob-volume: not running"
 fi
 
+if [ -e /dev/leds ]; then
+    echo "led-ring: /dev/leds present"
+else
+    echo "led-ring: /dev/leds missing"
+fi
+
+if ps | grep '[n]q-led-visualiz' >/dev/null 2>&1; then
+    echo "led-visualizer: running"
+else
+    echo "led-visualizer: not running"
+fi
+
 if proc_name_live nq-adbd-lite; then
     echo "adb: nq-adbd-lite running"
 else
@@ -471,6 +483,7 @@ STATE_DIR=/var/lib/nexusq
 WPA_DEST="$CONFIG_DIR/wpa_supplicant.conf"
 AUTH_DEST="$CONFIG_DIR/authorized_keys"
 SQUEEZELITE_DEST="$CONFIG_DIR/squeezelite.env"
+LED_VISUALIZER_DEST="$CONFIG_DIR/led-visualizer.env"
 RNG_DEST="$STATE_DIR/rng.seed"
 
 usage() {
@@ -483,10 +496,12 @@ Options:
   --wifi PATH              Copy PATH to /etc/nexusq/wpa_supplicant.conf
   --authorized-keys PATH   Copy PATH to /etc/nexusq/authorized_keys
   --squeezelite PATH       Copy PATH to /etc/nexusq/squeezelite.env
+  --led-visualizer PATH    Copy PATH to /etc/nexusq/led-visualizer.env
   --rng-seed PATH          Copy PATH to /var/lib/nexusq/rng.seed
   --clear-wifi             Remove persistent Wi-Fi config
   --clear-authorized-keys  Remove persistent SSH authorized_keys
   --clear-squeezelite      Remove persistent Squeezelite config
+  --clear-led-visualizer   Remove persistent LED visualizer config
   --clear-rng-seed         Remove persistent RNG seed
   --cancel-autoreboot      Cancel the current safety return-to-fastboot timer
   --start-network          Start or restart Wi-Fi, DHCP, and Dropbear
@@ -520,10 +535,12 @@ copy_secret() {
 wifi_src=
 auth_src=
 squeezelite_src=
+led_visualizer_src=
 rng_src=
 clear_wifi=0
 clear_auth=0
 clear_squeezelite=0
+clear_led_visualizer=0
 clear_rng=0
 cancel_autoreboot=0
 start_network=0
@@ -547,6 +564,11 @@ while [ "$#" -gt 0 ]; do
             squeezelite_src="$2"
             shift 2
             ;;
+        --led-visualizer)
+            [ "$#" -ge 2 ] || die "--led-visualizer requires a path"
+            led_visualizer_src="$2"
+            shift 2
+            ;;
         --rng-seed)
             [ "$#" -ge 2 ] || die "--rng-seed requires a path"
             rng_src="$2"
@@ -562,6 +584,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --clear-squeezelite)
             clear_squeezelite=1
+            shift
+            ;;
+        --clear-led-visualizer)
+            clear_led_visualizer=1
             shift
             ;;
         --clear-rng-seed)
@@ -600,11 +626,13 @@ chmod 700 "$CONFIG_DIR" "$STATE_DIR" 2>/dev/null || true
 [ "$clear_wifi" -eq 0 ] || { rm -f "$WPA_DEST"; echo "removed $WPA_DEST"; }
 [ "$clear_auth" -eq 0 ] || { rm -f "$AUTH_DEST"; echo "removed $AUTH_DEST"; }
 [ "$clear_squeezelite" -eq 0 ] || { rm -f "$SQUEEZELITE_DEST"; echo "removed $SQUEEZELITE_DEST"; }
+[ "$clear_led_visualizer" -eq 0 ] || { rm -f "$LED_VISUALIZER_DEST"; echo "removed $LED_VISUALIZER_DEST"; }
 [ "$clear_rng" -eq 0 ] || { rm -f "$RNG_DEST"; echo "removed $RNG_DEST"; }
 
 [ -z "$wifi_src" ] || copy_secret "$wifi_src" "$WPA_DEST" 600
 [ -z "$auth_src" ] || copy_secret "$auth_src" "$AUTH_DEST" 600
 [ -z "$squeezelite_src" ] || copy_secret "$squeezelite_src" "$SQUEEZELITE_DEST" 644
+[ -z "$led_visualizer_src" ] || copy_secret "$led_visualizer_src" "$LED_VISUALIZER_DEST" 644
 [ -z "$rng_src" ] || copy_secret "$rng_src" "$RNG_DEST" 600
 
 if [ "$cancel_autoreboot" -eq 1 ]; then
@@ -1108,7 +1136,7 @@ trap '' HUP
 echo "[nq-squeezelite] starting"
 date 2>/dev/null || true
 
-for env in /etc/nexusq/squeezelite.env /run/nexusq/squeezelite.env /tmp/squeezelite.env; do
+for env in /etc/nexusq/led-visualizer.env /run/nexusq/led-visualizer.env /tmp/led-visualizer.env /etc/nexusq/squeezelite.env /run/nexusq/squeezelite.env /tmp/squeezelite.env; do
     [ -r "$env" ] || continue
     # shellcheck disable=SC1090
     . "$env"
@@ -1125,6 +1153,7 @@ done
 : "${NQ_SQUEEZELITE_SPEAKER_VOLUME:=207}"
 : "${NQ_SQUEEZELITE_SPEAKER_SWITCH:=on}"
 : "${NQ_SQUEEZELITE_RESTART:=0}"
+: "${NQ_SQUEEZELITE_VISUALIZER:=${NQ_LED_VISUALIZER_ENABLE:-0}}"
 
 if [ "$NQ_SQUEEZELITE_ENABLE" != "1" ]; then
     echo "[nq-squeezelite] disabled; set NQ_SQUEEZELITE_ENABLE=1"
@@ -1232,13 +1261,18 @@ set -- squeezelite \
 [ -z "$NQ_SQUEEZELITE_SERVER" ] || set -- "$@" -s "$NQ_SQUEEZELITE_SERVER"
 [ -z "$NQ_SQUEEZELITE_ALSA_PARAMS" ] || set -- "$@" -a "$NQ_SQUEEZELITE_ALSA_PARAMS"
 [ -z "$NQ_SQUEEZELITE_CODEC_LIST" ] || set -- "$@" -c "$NQ_SQUEEZELITE_CODEC_LIST"
+[ "$NQ_SQUEEZELITE_VISUALIZER" != "1" ] || set -- "$@" -v
 case "$NQ_SQUEEZELITE_RESAMPLE" in
     ""|0|off|false|none) ;;
     *) set -- "$@" -u "$NQ_SQUEEZELITE_RESAMPLE" ;;
 esac
 
 echo "[nq-squeezelite] exec: $*"
-"$@" &
+if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" </dev/null &
+else
+    "$@" </dev/null &
+fi
 echo "$!" >"$PID"
 sleep 1
 
@@ -1337,6 +1371,105 @@ if pid_live "$(cat "$PID")"; then
 fi
 
 echo "[nq-knob-volume] failed to stay running"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-start-led-visualizer",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-led-visualizer.log
+PID=/run/nq-led-visualizer.pid
+mkdir -p /run /run/nexusq /dev/shm
+: >"$LOG"
+exec >>"$LOG" 2>&1
+trap '' HUP
+
+echo "[nq-led-visualizer] starting"
+date 2>/dev/null || true
+
+for env in /etc/nexusq/led-visualizer.env /run/nexusq/led-visualizer.env /tmp/led-visualizer.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_LED_VISUALIZER_ENABLE:=0}"
+: "${NQ_LED_VISUALIZER_DEVICE:=/dev/leds}"
+: "${NQ_LED_VISUALIZER_SHM:=}"
+: "${NQ_LED_VISUALIZER_FPS:=20}"
+: "${NQ_LED_VISUALIZER_BRIGHTNESS:=255}"
+: "${NQ_LED_VISUALIZER_IDLE_BRIGHTNESS:=6}"
+: "${NQ_LED_VISUALIZER_GAIN:=8}"
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+visualizer_live() {
+    if [ -s "$PID" ] && pid_live "$(cat "$PID" 2>/dev/null || true)"; then
+        return 0
+    fi
+    ps | grep '[n]q-led-visualiz' >/dev/null 2>&1
+}
+
+if [ "$NQ_LED_VISUALIZER_ENABLE" != "1" ]; then
+    echo "[nq-led-visualizer] disabled; set NQ_LED_VISUALIZER_ENABLE=1"
+    exit 0
+fi
+
+if [ ! -x /usr/sbin/nq-led-visualizer ]; then
+    echo "[nq-led-visualizer] /usr/sbin/nq-led-visualizer missing"
+    exit 0
+fi
+
+if [ ! -e "$NQ_LED_VISUALIZER_DEVICE" ]; then
+    echo "[nq-led-visualizer] $NQ_LED_VISUALIZER_DEVICE missing"
+    exit 0
+fi
+
+if ! grep -q ' /dev/shm ' /proc/mounts 2>/dev/null; then
+    mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
+fi
+
+if visualizer_live; then
+    echo "[nq-led-visualizer] already running"
+    exit 0
+fi
+
+set -- /usr/sbin/nq-led-visualizer \\
+    --device "$NQ_LED_VISUALIZER_DEVICE" \\
+    --fps "$NQ_LED_VISUALIZER_FPS" \\
+    --brightness "$NQ_LED_VISUALIZER_BRIGHTNESS" \\
+    --idle-brightness "$NQ_LED_VISUALIZER_IDLE_BRIGHTNESS" \\
+    --gain "$NQ_LED_VISUALIZER_GAIN"
+
+[ -z "$NQ_LED_VISUALIZER_SHM" ] || set -- "$@" --shm "$NQ_LED_VISUALIZER_SHM"
+
+echo "[nq-led-visualizer] exec: $*"
+if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" </dev/null &
+else
+    "$@" </dev/null &
+fi
+echo "$!" >"$PID"
+sleep 1
+
+if pid_live "$(cat "$PID")"; then
+    echo "[nq-led-visualizer] pid=$(cat "$PID")"
+    exit 0
+fi
+
+echo "[nq-led-visualizer] failed to stay running"
 exit 1
 """,
         0o755,
@@ -1501,6 +1634,11 @@ if [ -s /etc/nexusq/squeezelite.env ]; then
 else
     echo "config: /etc/nexusq/squeezelite.env missing"
 fi
+if [ -s /etc/nexusq/led-visualizer.env ]; then
+    echo "config: /etc/nexusq/led-visualizer.env present"
+else
+    echo "config: /etc/nexusq/led-visualizer.env missing"
+fi
 
 proc_name_live() {
     name="$1"
@@ -1533,6 +1671,19 @@ else
     echo "knob-volume: not running"
 fi
 
+if [ -e /dev/leds ]; then
+    echo "led-ring: /dev/leds present"
+else
+    echo "led-ring: /dev/leds missing"
+fi
+
+if ps | grep '[n]q-led-visualiz' >/dev/null 2>&1; then
+    echo "led-visualizer: running"
+    ps | grep '[n]q-led-visualiz' 2>/dev/null || true
+else
+    echo "led-visualizer: not running"
+fi
+
 if command -v aplay >/dev/null 2>&1; then
     aplay -l 2>/dev/null || true
 fi
@@ -1545,6 +1696,11 @@ fi
 if [ -s /run/nexusq-knob-volume.log ]; then
     echo "--- /run/nexusq-knob-volume.log ---"
     tail -n 80 /run/nexusq-knob-volume.log 2>/dev/null || cat /run/nexusq-knob-volume.log
+fi
+
+if [ -s /run/nexusq-led-visualizer.log ]; then
+    echo "--- /run/nexusq-led-visualizer.log ---"
+    tail -n 80 /run/nexusq-led-visualizer.log 2>/dev/null || cat /run/nexusq-led-visualizer.log
 fi
 """,
         0o755,
@@ -1559,9 +1715,10 @@ export PATH
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
-mkdir -p /dev/pts /run
+mkdir -p /dev/pts /dev/shm /run
 mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
+grep -q ' /dev/shm ' /proc/mounts 2>/dev/null || mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 mkdir -p /run
 mount -o remount,rw / 2>/dev/null || true
 
@@ -1697,6 +1854,10 @@ if [ -x /sbin/nq-start-knob-volume ]; then
     /sbin/nq-start-knob-volume || true
 fi
 
+if [ -x /sbin/nq-start-led-visualizer ]; then
+    /sbin/nq-start-led-visualizer || true
+fi
+
 if [ -x /sbin/nq-start-adbd ]; then
     /sbin/nq-start-adbd || true
 fi
@@ -1731,6 +1892,7 @@ Expected files:
 - /etc/nexusq/input.env
 - /etc/nexusq/squeezelite.env
 - /etc/nexusq/knob-volume.env
+- /etc/nexusq/led-visualizer.env
 - /etc/nexusq/adbd.env
 
 Runtime-only test files in /run/nexusq override these persistent files.
@@ -1745,6 +1907,7 @@ Runtime-only test files in /run/nexusq override these persistent files.
         (root / "artifacts/bin/nq-knob-volume", rootfs / "usr/sbin/nq-knob-volume"),
         (root / "artifacts/bin/nq-adbd-lite", rootfs / "usr/sbin/nq-adbd-lite"),
         (root / "artifacts/bin/nq-avr-i2c", rootfs / "usr/sbin/nq-avr-i2c"),
+        (root / "artifacts/bin/nq-led-visualizer", rootfs / "usr/sbin/nq-led-visualizer"),
         (root / "build/seed-rng-arm", rootfs / "sbin/seed-rng"),
     ):
         if src.exists():

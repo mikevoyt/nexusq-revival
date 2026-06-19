@@ -57,11 +57,23 @@ NQ_SQUEEZELITE_SPEAKER_VOLUME=207
 EOF
 ```
 
+To enable the LED-ring visualizer, add a separate config:
+
+```sh
+cat >/run/nexusq/led-visualizer.env <<'EOF'
+NQ_LED_VISUALIZER_ENABLE=1
+NQ_LED_VISUALIZER_BRIGHTNESS=255
+NQ_LED_VISUALIZER_IDLE_BRIGHTNESS=6
+NQ_LED_VISUALIZER_GAIN=8
+EOF
+```
+
 Persist it:
 
 ```sh
 /sbin/nq-provision \
   --squeezelite /run/nexusq/squeezelite.env \
+  --led-visualizer /run/nexusq/led-visualizer.env \
   --start-squeezelite \
   --status
 ```
@@ -77,6 +89,7 @@ Check status and logs:
 ```sh
 /sbin/nq-player-status
 cat /run/nexusq-squeezelite.log
+cat /run/nexusq-led-visualizer.log
 ```
 
 If the Q disappears from Music Assistant, first check that `squeezelite` is
@@ -134,6 +147,8 @@ automatically.
   `NQ_SQUEEZELITE_MASTER_VOLUME` and `NQ_KNOB_MAX` to `207`.
 - The physical top ring controls local TAS5713 volume. Music Assistant does not
   yet receive hardware-volume feedback from those local changes.
-- LEDs and cap-touch handling are not wired into Music Assistant yet.
+- The LED-ring visualizer is local to the Q. Music Assistant does not control
+  the animation or brightness yet.
+- Cap-touch handling is not wired into Music Assistant yet.
 - Full Music Assistant server-on-Q support remains a research project, not the
   practical first integration path.
