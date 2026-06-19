@@ -434,7 +434,7 @@ else
     echo "input: Steelhead Front Panel missing"
 fi
 
-if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+if proc_name_live squeezelite; then
     echo "squeezelite: running"
 else
     echo "squeezelite: not running"
@@ -1118,6 +1118,40 @@ if ! command -v squeezelite >/dev/null 2>&1; then
     exit 1
 fi
 
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+proc_live() {
+    name="$1"
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" && return 0
+    done
+    return 1
+}
+
+stop_proc() {
+    name="$1"
+    live_pids=
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
+    sleep 1
+    live_pids=
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill -KILL $live_pids 2>/dev/null || true
+}
+
 derive_mac() {
     if [ -n "$NQ_SQUEEZELITE_MAC" ]; then
         echo "$NQ_SQUEEZELITE_MAC"
@@ -1154,18 +1188,19 @@ if command -v amixer >/dev/null 2>&1; then
 fi
 
 if [ "$NQ_SQUEEZELITE_RESTART" != "1" ]; then
-    if [ -s "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
-        echo "[nq-squeezelite] already running pid=$(cat "$PID")"
-        exit 0
+    if [ -s "$PID" ]; then
+        old_pid="$(cat "$PID" 2>/dev/null || true)"
+        if pid_live "$old_pid"; then
+            echo "[nq-squeezelite] already running pid=$old_pid"
+            exit 0
+        fi
     fi
-    if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
+    if proc_live squeezelite; then
         echo "[nq-squeezelite] already running"
         exit 0
     fi
 else
-    killall squeezelite 2>/dev/null || true
-    pkill -x squeezelite 2>/dev/null || true
-    sleep 1
+    stop_proc squeezelite
 fi
 
 set -- squeezelite \
@@ -1189,7 +1224,7 @@ echo "[nq-squeezelite] exec: $*"
 echo "$!" >"$PID"
 sleep 1
 
-if kill -0 "$(cat "$PID")" 2>/dev/null; then
+if pid_live "$(cat "$PID")"; then
     echo "[nq-squeezelite] pid=$(cat "$PID")"
     exit 0
 fi
@@ -1366,13 +1401,6 @@ else
     echo "config: /etc/nexusq/squeezelite.env missing"
 fi
 
-if pgrep -x squeezelite >/dev/null 2>&1 || pidof squeezelite >/dev/null 2>&1; then
-    echo "squeezelite: running"
-    ps | grep '[s]queezelite' 2>/dev/null || true
-else
-    echo "squeezelite: not running"
-fi
-
 proc_name_live() {
     name="$1"
     for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
@@ -1383,6 +1411,13 @@ proc_name_live() {
     done
     return 1
 }
+
+if proc_name_live squeezelite; then
+    echo "squeezelite: running"
+    ps | grep '[s]queezelite' 2>/dev/null || true
+else
+    echo "squeezelite: not running"
+fi
 
 if grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null; then
     echo "input: Steelhead Front Panel present"
