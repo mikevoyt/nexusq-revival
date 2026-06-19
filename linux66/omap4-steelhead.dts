@@ -67,6 +67,13 @@
 		>;
 	};
 
+	i2c2_pins: i2c2-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x126, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c2_scl */
+			OMAP4_IOPAD(0x128, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c2_sda */
+		>;
+	};
+
 	i2c4_pins: i2c4-pins {
 		pinctrl-single,pins = <
 			OMAP4_IOPAD(0x12e, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c4_scl */
@@ -104,6 +111,13 @@
 		>;
 	};
 
+	avr_gpio_pins: avr-gpio-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x070, PIN_OUTPUT_PULLUP | MUX_MODE3)	/* gpmc_a24.gpio_48 */
+			OMAP4_IOPAD(0x072, PIN_INPUT_PULLUP | MUX_MODE3)	/* gpmc_a25.gpio_49 */
+		>;
+	};
+
 	mmc5_pins: mmc5-pins {
 		pinctrl-single,pins = <
 			OMAP4_IOPAD(0x148, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_clk */
@@ -124,6 +138,22 @@
 	twl: twl@48 {
 		reg = <0x48>;
 		interrupts = <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>;
+	};
+};
+
+&i2c2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c2_pins>;
+	clock-frequency = <400000>;
+	status = "okay";
+
+	front_panel: front-panel@20 {
+		compatible = "google,steelhead-avr";
+		reg = <0x20>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&avr_gpio_pins>;
+		reset-gpios = <&gpio2 16 GPIO_ACTIVE_LOW>;		/* gpio_48 */
+		interrupts-extended = <&gpio2 17 IRQ_TYPE_LEVEL_LOW>;	/* gpio_49 */
 	};
 };
 

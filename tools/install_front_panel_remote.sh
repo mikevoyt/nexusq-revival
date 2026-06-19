@@ -6,6 +6,10 @@ OUT="${OUT:-$ROOT/build/linux-6.6-omap2plus-steelhead-nosmp-audio-dma-wifi-publi
 TARGET="${TARGET:-root@192.168.86.38}"
 SSH_KEY="${SSH_KEY:-$ROOT/.secrets/nexusq-ssh-test/id_ed25519}"
 POLL_MS="${NQ_AVR_POLL_MS:-50}"
+FORCE_POLL="${NQ_AVR_FORCE_POLL:-1}"
+DEBUG_EVENTS="${NQ_AVR_DEBUG_EVENTS:-0}"
+LEGACY_INIT="${NQ_AVR_LEGACY_INIT:-1}"
+RESET_PULSE_MS="${NQ_AVR_RESET_PULSE_MS:-0}"
 I2C_ADAPTER="${NQ_INPUT_I2C_ADAPTER:-i2c-1}"
 I2C_ADDR="${NQ_INPUT_I2C_ADDR:-0x20}"
 START_KNOB="${NQ_START_KNOB_VOLUME:-1}"
@@ -32,7 +36,7 @@ scp $SSH_OPTS "$KO" "$HELPER" "$TARGET:/tmp/"
 
 # shellcheck disable=SC2086
 ssh $SSH_OPTS "$TARGET" \
-	"POLL_MS='$POLL_MS' I2C_ADAPTER='$I2C_ADAPTER' I2C_ADDR='$I2C_ADDR' START_KNOB='$START_KNOB' /bin/sh -s" <<'EOF'
+	"POLL_MS='$POLL_MS' FORCE_POLL='$FORCE_POLL' DEBUG_EVENTS='$DEBUG_EVENTS' LEGACY_INIT='$LEGACY_INIT' RESET_PULSE_MS='$RESET_PULSE_MS' I2C_ADAPTER='$I2C_ADAPTER' I2C_ADDR='$I2C_ADDR' START_KNOB='$START_KNOB' /bin/sh -s" <<'EOF'
 set -eu
 
 krel="$(uname -r)"
@@ -65,10 +69,11 @@ rm -f /usr/sbin/nq-knob-volume
 cp /tmp/nq-knob-volume /usr/sbin/nq-knob-volume
 chmod 755 /usr/sbin/nq-knob-volume
 
+avr_args="poll_ms=$POLL_MS force_poll=$FORCE_POLL debug_events=$DEBUG_EVENTS legacy_init=$LEGACY_INIT reset_pulse_ms=$RESET_PULSE_MS"
 depmod -a "$krel" 2>/dev/null || true
 rmmod steelhead_avr 2>/dev/null || true
-insmod "$moddir/steelhead_avr.ko" "poll_ms=$POLL_MS" 2>/dev/null || \
-	modprobe steelhead_avr "poll_ms=$POLL_MS" 2>/dev/null || true
+insmod "$moddir/steelhead_avr.ko" $avr_args 2>/dev/null || \
+	modprobe steelhead_avr $avr_args 2>/dev/null || true
 
 if ! grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null &&
    [ -n "$I2C_ADAPTER" ]; then
@@ -88,7 +93,7 @@ if [ "$START_KNOB" = "1" ] && grep -q 'Steelhead Front Panel' /proc/bus/input/de
 	NQ_KNOB_CONTROL="${NQ_KNOB_CONTROL:-Master Volume}" \
 	NQ_KNOB_MUTE_CONTROL="${NQ_KNOB_MUTE_CONTROL:-Speaker Switch}" \
 	NQ_KNOB_MIN="${NQ_KNOB_MIN:-120}" \
-	NQ_KNOB_MAX="${NQ_KNOB_MAX:-207}" \
+	NQ_KNOB_MAX="${NQ_KNOB_MAX:-231}" \
 	NQ_KNOB_STEP="${NQ_KNOB_STEP:-2}" \
 	NQ_KNOB_MUTE_ENABLE="${NQ_KNOB_MUTE_ENABLE:-1}" \
 		/usr/sbin/nq-knob-volume >/tmp/nq-knob-volume.log 2>&1 &

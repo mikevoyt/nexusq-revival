@@ -38,7 +38,7 @@
 #define DEFAULT_CARD "0"
 #define DEFAULT_CONTROL "Master Volume"
 #define DEFAULT_MIN 120
-#define DEFAULT_MAX 207
+#define DEFAULT_MAX 231
 #define DEFAULT_STEP 2
 #define SCAN_SLEEP_SECS 1
 
@@ -187,6 +187,11 @@ static int read_amixer_value(const char *card, const char *control)
 
 		if (!values)
 			continue;
+		p = line;
+		while (isspace((unsigned char)*p))
+			p++;
+		if (*p != ':')
+			continue;
 		p = values + strlen("values=");
 		while (*p && !isdigit((unsigned char)*p) && *p != '-')
 			p++;
@@ -332,6 +337,8 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, handle_signal);
 	signal(SIGTERM, handle_signal);
+	signal(SIGHUP, SIG_IGN);
+	signal(SIGCHLD, SIG_DFL);
 
 	volume = read_amixer_value(card, control);
 	if (volume < 0)

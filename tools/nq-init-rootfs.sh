@@ -43,6 +43,9 @@ configure_usb_gadget() {
 }
 
 start_usb_shell() {
+    shell=/bin/sh
+    [ -x /bin/bash ] && shell=/bin/bash
+
     for n in 1 2 3 4 5 6 7 8 9 10; do
         if [ -e /dev/ttyGS0 ]; then
             break
@@ -56,7 +59,7 @@ start_usb_shell() {
     done
 
     if [ -e /dev/ttyGS0 ]; then
-        setsid sh -c 'exec /bin/sh </dev/ttyGS0 >/dev/ttyGS0 2>&1' &
+        setsid sh -c "exec $shell </dev/ttyGS0 >/dev/ttyGS0 2>&1" &
     fi
 }
 
@@ -140,9 +143,18 @@ if [ -x /sbin/nq-start-knob-volume ]; then
     /sbin/nq-start-knob-volume || true
 fi
 
+if [ -x /sbin/nq-start-adbd ]; then
+    /sbin/nq-start-adbd || true
+fi
+
 if command -v busybox >/dev/null 2>&1; then
-    busybox telnetd -l /bin/sh -p 2323 &
+    shell=/bin/sh
+    [ -x /bin/bash ] && shell=/bin/bash
+    busybox telnetd -l "$shell" -p 2323 &
 fi
 
 echo "Nexus Q Debian rescue shell on serial; usb0: 169.254.42.2"
+if [ -x /bin/bash ]; then
+    exec /bin/bash
+fi
 exec /bin/sh

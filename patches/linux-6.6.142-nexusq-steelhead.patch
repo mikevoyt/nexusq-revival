@@ -1,7 +1,7 @@
 diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts
 --- build/patch-pristine/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts	1969-12-31 16:00:00
-+++ kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts	2026-06-19 10:01:04
-@@ -0,0 +1,268 @@
++++ kernel/linux-6.6.142/arch/arm/boot/dts/ti/omap/omap4-steelhead.dts	2026-06-19 11:27:34
+@@ -0,0 +1,298 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;
 +
@@ -71,6 +71,13 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +		>;
 +	};
 +
++	i2c2_pins: i2c2-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x126, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c2_scl */
++			OMAP4_IOPAD(0x128, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c2_sda */
++		>;
++	};
++
 +	i2c4_pins: i2c4-pins {
 +		pinctrl-single,pins = <
 +			OMAP4_IOPAD(0x12e, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c4_scl */
@@ -108,6 +115,13 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +		>;
 +	};
 +
++	avr_gpio_pins: avr-gpio-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x070, PIN_OUTPUT_PULLUP | MUX_MODE3)	/* gpmc_a24.gpio_48 */
++			OMAP4_IOPAD(0x072, PIN_INPUT_PULLUP | MUX_MODE3)	/* gpmc_a25.gpio_49 */
++		>;
++	};
++
 +	mmc5_pins: mmc5-pins {
 +		pinctrl-single,pins = <
 +			OMAP4_IOPAD(0x148, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_clk */
@@ -128,6 +142,22 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	twl: twl@48 {
 +		reg = <0x48>;
 +		interrupts = <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>;
++	};
++};
++
++&i2c2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c2_pins>;
++	clock-frequency = <400000>;
++	status = "okay";
++
++	front_panel: front-panel@20 {
++		compatible = "google,steelhead-avr";
++		reg = <0x20>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&avr_gpio_pins>;
++		reset-gpios = <&gpio2 16 GPIO_ACTIVE_LOW>;		/* gpio_48 */
++		interrupts-extended = <&gpio2 17 IRQ_TYPE_LEVEL_LOW>;	/* gpio_49 */
 +	};
 +};
 +
@@ -1565,8 +1595,8 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
  obj-$(CONFIG_INPUT_CM109)		+= cm109.o
 diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/input/misc/steelhead_avr.c kernel/linux-6.6.142/drivers/input/misc/steelhead_avr.c
 --- build/patch-pristine/linux-6.6.142/drivers/input/misc/steelhead_avr.c	1969-12-31 16:00:00
-+++ kernel/linux-6.6.142/drivers/input/misc/steelhead_avr.c	2026-06-19 10:08:30
-@@ -0,0 +1,308 @@
++++ kernel/linux-6.6.142/drivers/input/misc/steelhead_avr.c	2026-06-19 11:48:07
+@@ -0,0 +1,446 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * Google Nexus Q / Steelhead AVR front panel input driver.
@@ -1581,6 +1611,7 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +#include <linux/input.h>
 +#include <linux/interrupt.h>
 +#include <linux/module.h>
++#include <linux/mutex.h>
 +#include <linux/workqueue.h>
 +
 +#define STEELHEAD_AVR_KEY_EVENT_FIFO	0x00
@@ -1589,6 +1620,20 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +#define STEELHEAD_AVR_KEY_EVENT_RESET	0xfe
 +#define STEELHEAD_AVR_KEY_EVENT_EMPTY	0xff
 +
++#define STEELHEAD_AVR_KEY_MUTE_THRESHOLD	0x01
++
++#define STEELHEAD_AVR_LED_MODE			0x02
++#define STEELHEAD_AVR_LED_MODE_BOOT_ANIMATION	0x00
++#define STEELHEAD_AVR_LED_MODE_HOST_AUTO_COMMIT	0x01
++#define STEELHEAD_AVR_LED_MODE_HOST		0x02
++#define STEELHEAD_AVR_LED_MODE_POWER_UP		0x03
++#define STEELHEAD_AVR_LED_SET_ALL		0x03
++#define STEELHEAD_AVR_LED_COMMIT		0x05
++#define STEELHEAD_AVR_LED_COMMIT_NOW		0x00
++#define STEELHEAD_AVR_LED_SET_MUTE		0x06
++#define STEELHEAD_AVR_LED_COUNT			0x07
++#define STEELHEAD_AVR_HW_TYPE			0x08
++#define STEELHEAD_AVR_HW_REVISION		0x09
 +#define STEELHEAD_AVR_FW_VERSION	0x0a
 +
 +#define STEELHEAD_AVR_KEY_MUTE		0x00
@@ -1604,13 +1649,35 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +MODULE_PARM_DESC(poll_ms,
 +		 "Polling interval in ms when no IRQ is provided; 0 disables polling");
 +
++static bool force_poll;
++module_param(force_poll, bool, 0644);
++MODULE_PARM_DESC(force_poll,
++		 "Poll the event FIFO even when an IRQ is available");
++
++static bool debug_events;
++module_param(debug_events, bool, 0644);
++MODULE_PARM_DESC(debug_events, "Log raw event FIFO bytes");
++
++static bool legacy_init = true;
++module_param(legacy_init, bool, 0644);
++MODULE_PARM_DESC(legacy_init,
++		 "Run the legacy LED/control initialization sequence");
++
++static unsigned int reset_pulse_ms;
++module_param(reset_pulse_ms, uint, 0644);
++MODULE_PARM_DESC(reset_pulse_ms,
++		 "Assert AVR reset for this many ms during probe; 0 disables");
++
 +struct steelhead_avr {
 +	struct device *dev;
 +	struct i2c_client *client;
 +	struct input_dev *input;
 +	struct gpio_desc *reset_gpio;
 +	struct delayed_work poll_work;
++	struct mutex i2c_lock;
 +	bool polling;
++	u8 led_mode;
++	u8 led_count;
 +};
 +
 +static const unsigned short steelhead_avr_keymap[] = {
@@ -1628,14 +1695,17 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	int ret = 0;
 +	int try;
 +
++	mutex_lock(&avr->i2c_lock);
 +	for (try = 0; try < STEELHEAD_AVR_I2C_ATTEMPTS; try++) {
 +		ret = i2c_smbus_write_byte(client, reg);
 +		if (!ret)
 +			break;
 +		usleep_range(1000, 2000);
 +	}
-+	if (ret)
++	if (ret) {
++		mutex_unlock(&avr->i2c_lock);
 +		return ret;
++	}
 +
 +	/*
 +	 * The legacy driver found that the AVR needs a small settling delay
@@ -1646,13 +1716,53 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +
 +	for (try = 0; try < STEELHEAD_AVR_I2C_ATTEMPTS; try++) {
 +		ret = i2c_master_recv(client, buf, len);
-+		if (ret == len)
++		if (ret == len) {
++			mutex_unlock(&avr->i2c_lock);
 +			return 0;
++		}
 +		if (ret < 0)
 +			usleep_range(1000, 2000);
 +	}
++	mutex_unlock(&avr->i2c_lock);
 +
 +	return ret < 0 ? ret : -EIO;
++}
++
++static int steelhead_avr_write_byte(struct steelhead_avr *avr, u8 reg, u8 val)
++{
++	struct i2c_client *client = avr->client;
++	int ret = 0;
++	int try;
++
++	mutex_lock(&avr->i2c_lock);
++	for (try = 0; try < STEELHEAD_AVR_I2C_ATTEMPTS; try++) {
++		ret = i2c_smbus_write_byte_data(client, reg, val);
++		if (!ret)
++			break;
++		usleep_range(1000, 2000);
++	}
++	mutex_unlock(&avr->i2c_lock);
++
++	return ret;
++}
++
++static int steelhead_avr_write_block(struct steelhead_avr *avr, u8 reg,
++				     const u8 *buf, size_t len)
++{
++	struct i2c_client *client = avr->client;
++	int ret = 0;
++	int try;
++
++	mutex_lock(&avr->i2c_lock);
++	for (try = 0; try < STEELHEAD_AVR_I2C_ATTEMPTS; try++) {
++		ret = i2c_smbus_write_i2c_block_data(client, reg, len, buf);
++		if (!ret)
++			break;
++		usleep_range(1000, 2000);
++	}
++	mutex_unlock(&avr->i2c_lock);
++
++	return ret;
 +}
 +
 +static int steelhead_avr_read_event(struct steelhead_avr *avr, u8 *event)
@@ -1683,6 +1793,10 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	input_event(avr->input, EV_MSC, MSC_SCAN, event);
 +	input_report_key(avr->input, key, down);
 +	input_sync(avr->input);
++
++	if (debug_events)
++		dev_info(avr->dev, "reported key %u %s\n", key,
++			 down ? "down" : "up");
 +}
 +
 +static irqreturn_t steelhead_avr_irq_thread(int irq, void *data)
@@ -1713,8 +1827,14 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +		if (event == STEELHEAD_AVR_KEY_EVENT_EMPTY)
 +			break;
 +
++		if (debug_events)
++			dev_info(avr->dev, "event FIFO byte 0x%02x\n", event);
++
 +		steelhead_avr_report_event(avr, event);
 +	}
++
++	if (debug_events && i == 0)
++		dev_info_ratelimited(avr->dev, "event FIFO empty\n");
 +
 +	if (i == STEELHEAD_AVR_MAX_EVENTS)
 +		dev_warn_ratelimited(avr->dev, "event FIFO did not drain\n");
@@ -1736,11 +1856,20 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +static int steelhead_avr_hw_init(struct steelhead_avr *avr)
 +{
 +	u8 version[2];
++	u8 black[3] = { 0, 0, 0 };
++	u8 hw_type = 0;
++	u8 hw_rev = 0;
 +	int ret;
 +
 +	if (avr->reset_gpio) {
++		if (reset_pulse_ms) {
++			dev_info(avr->dev, "pulsing AVR reset for %u ms\n",
++				 reset_pulse_ms);
++			gpiod_set_value_cansleep(avr->reset_gpio, 1);
++			msleep(reset_pulse_ms);
++		}
 +		gpiod_set_value_cansleep(avr->reset_gpio, 0);
-+		msleep(20);
++		msleep(reset_pulse_ms ? 250 : 20);
 +	}
 +
 +	ret = steelhead_avr_read(avr, STEELHEAD_AVR_FW_VERSION, version,
@@ -1751,6 +1880,37 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +
 +	dev_info(avr->dev, "front panel AVR firmware %u.%u\n",
 +		 version[0], version[1]);
++
++	if (!legacy_init)
++		return 0;
++
++	ret = steelhead_avr_write_block(avr, STEELHEAD_AVR_LED_SET_MUTE,
++					black, sizeof(black));
++	if (ret)
++		dev_warn(avr->dev, "failed to clear mute LED: %d\n", ret);
++
++	ret = steelhead_avr_read(avr, STEELHEAD_AVR_LED_COUNT,
++				 &avr->led_count, sizeof(avr->led_count));
++	if (ret) {
++		dev_warn(avr->dev, "failed to read LED count: %d\n", ret);
++		avr->led_count = 32;
++	}
++
++	ret = steelhead_avr_read(avr, STEELHEAD_AVR_LED_MODE,
++				 &avr->led_mode, sizeof(avr->led_mode));
++	if (ret) {
++		dev_warn(avr->dev, "failed to read LED mode: %d\n", ret);
++		avr->led_mode = STEELHEAD_AVR_LED_MODE_HOST_AUTO_COMMIT;
++	}
++
++	steelhead_avr_read(avr, STEELHEAD_AVR_HW_TYPE, &hw_type,
++			   sizeof(hw_type));
++	steelhead_avr_read(avr, STEELHEAD_AVR_HW_REVISION, &hw_rev,
++			   sizeof(hw_rev));
++
++	dev_info(avr->dev,
++		 "legacy init: led_count=%u led_mode=%u hw_type=%u hw_rev=%u\n",
++		 avr->led_count, avr->led_mode, hw_type, hw_rev);
 +
 +	return 0;
 +}
@@ -1770,6 +1930,7 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +
 +	avr->dev = dev;
 +	avr->client = client;
++	mutex_init(&avr->i2c_lock);
 +	i2c_set_clientdata(client, avr);
 +
 +	avr->reset_gpio = devm_gpiod_get_optional(dev, "reset",
@@ -1821,14 +1982,18 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +						"steelhead-avr", avr);
 +		if (ret)
 +			return dev_err_probe(dev, ret, "failed to request IRQ\n");
-+	} else if (poll_ms) {
++		dev_info(dev, "using IRQ %d\n", irq);
++	}
++
++	if ((irq <= 0 || force_poll) && poll_ms) {
 +		INIT_DELAYED_WORK(&avr->poll_work, steelhead_avr_poll_work);
 +		avr->polling = true;
 +		schedule_delayed_work(&avr->poll_work,
 +				      msecs_to_jiffies(poll_ms));
-+		dev_info(dev, "no IRQ provided; polling every %u ms\n",
++		dev_info(dev, "%s; polling every %u ms\n",
++			 irq > 0 ? "force_poll enabled" : "no IRQ provided",
 +			 poll_ms);
-+	} else {
++	} else if (irq <= 0) {
 +		return dev_err_probe(dev, -ENXIO, "missing IRQ and polling disabled\n");
 +	}
 +
@@ -1847,6 +2012,9 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +
 +	if (avr && avr->polling)
 +		cancel_delayed_work_sync(&avr->poll_work);
++	if (avr && legacy_init)
++		steelhead_avr_write_byte(avr, STEELHEAD_AVR_LED_MODE,
++					 STEELHEAD_AVR_LED_MODE_POWER_UP);
 +}
 +
 +static const struct of_device_id steelhead_avr_of_match[] = {
@@ -1877,8 +2045,8 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +MODULE_LICENSE("GPL");
 diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts kernel/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts
 --- build/patch-pristine/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts	1969-12-31 16:00:00
-+++ kernel/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts	2026-06-19 10:01:04
-@@ -0,0 +1,268 @@
++++ kernel/linux-6.6.142/scripts/dtc/include-prefixes/arm/ti/omap/omap4-steelhead.dts	2026-06-19 11:27:34
+@@ -0,0 +1,298 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/dts-v1/;
 +
@@ -1948,6 +2116,13 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +		>;
 +	};
 +
++	i2c2_pins: i2c2-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x126, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c2_scl */
++			OMAP4_IOPAD(0x128, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c2_sda */
++		>;
++	};
++
 +	i2c4_pins: i2c4-pins {
 +		pinctrl-single,pins = <
 +			OMAP4_IOPAD(0x12e, PIN_INPUT_PULLUP | MUX_MODE0)	/* i2c4_scl */
@@ -1985,6 +2160,13 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +		>;
 +	};
 +
++	avr_gpio_pins: avr-gpio-pins {
++		pinctrl-single,pins = <
++			OMAP4_IOPAD(0x070, PIN_OUTPUT_PULLUP | MUX_MODE3)	/* gpmc_a24.gpio_48 */
++			OMAP4_IOPAD(0x072, PIN_INPUT_PULLUP | MUX_MODE3)	/* gpmc_a25.gpio_49 */
++		>;
++	};
++
 +	mmc5_pins: mmc5-pins {
 +		pinctrl-single,pins = <
 +			OMAP4_IOPAD(0x148, PIN_INPUT_PULLUP | MUX_MODE0)	/* sdmmc5_clk */
@@ -2005,6 +2187,22 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +	twl: twl@48 {
 +		reg = <0x48>;
 +		interrupts = <GIC_SPI 7 IRQ_TYPE_LEVEL_HIGH>;
++	};
++};
++
++&i2c2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&i2c2_pins>;
++	clock-frequency = <400000>;
++	status = "okay";
++
++	front_panel: front-panel@20 {
++		compatible = "google,steelhead-avr";
++		reg = <0x20>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&avr_gpio_pins>;
++		reset-gpios = <&gpio2 16 GPIO_ACTIVE_LOW>;		/* gpio_48 */
++		interrupts-extended = <&gpio2 17 IRQ_TYPE_LEVEL_LOW>;	/* gpio_49 */
 +	};
 +};
 +

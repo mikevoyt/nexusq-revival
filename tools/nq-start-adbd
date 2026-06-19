@@ -1,0 +1,77 @@
+#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-adbd.log
+PID=/run/nq-adbd-lite.pid
+mkdir -p /run /run/nexusq
+: >"$LOG"
+exec >>"$LOG" 2>&1
+trap '' HUP
+
+echo "[nq-adbd-lite] starting"
+date 2>/dev/null || true
+
+for env in /etc/nexusq/adbd.env /run/nexusq/adbd.env /tmp/adbd.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_ADBD_ENABLE:=0}"
+: "${NQ_ADBD_PORT:=5555}"
+: "${NQ_ADBD_SHELL:=}"
+export NQ_ADBD_SHELL
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    comm="$(cat "/proc/$pid/comm" 2>/dev/null || true)"
+    [ "$comm" = "nq-adbd-lite" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+adbd_live() {
+    for pid in $(pgrep -x nq-adbd-lite 2>/dev/null || pidof nq-adbd-lite 2>/dev/null || true); do
+        pid_live "$pid" && return 0
+    done
+    return 1
+}
+
+if [ "$NQ_ADBD_ENABLE" != "1" ]; then
+    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1"
+    exit 0
+fi
+
+if [ ! -x /usr/sbin/nq-adbd-lite ]; then
+    echo "[nq-adbd-lite] /usr/sbin/nq-adbd-lite missing"
+    exit 0
+fi
+
+if [ -s "$PID" ]; then
+    old_pid="$(cat "$PID" 2>/dev/null || true)"
+    if pid_live "$old_pid"; then
+        echo "[nq-adbd-lite] already running pid=$old_pid"
+        exit 0
+    fi
+fi
+if adbd_live; then
+    echo "[nq-adbd-lite] already running"
+    exit 0
+fi
+
+/usr/sbin/nq-adbd-lite "$NQ_ADBD_PORT" &
+echo "$!" >"$PID"
+sleep 1
+
+if pid_live "$(cat "$PID")"; then
+    echo "[nq-adbd-lite] pid=$(cat "$PID") port=$NQ_ADBD_PORT"
+    exit 0
+fi
+
+echo "[nq-adbd-lite] failed to stay running"
+exit 1

@@ -20,18 +20,15 @@ maps the AVR events to `KEY_MUTE`, `KEY_VOLUMEUP`, and `KEY_VOLUMEDOWN`.
 
 ## Current Strategy
 
-Keep the front-panel driver modular while bring-up is still active. The first
-DT attempt added an AVR child under `&i2c2`, but the resulting diagnostic boot
-image did not reach the USB serial loader. A follow-up diagnostic image with
-the AVR DT node removed also failed to reach the loader, so the immediate boot
-regression is not proven to be the AVR node itself.
+Keep the front-panel driver modular while bring-up is still active. The 6.6 DT
+now registers the AVR on OMAP hardware I2C2, Linux adapter `i2c-1`, at address
+`0x20`, with reset on GPIO48 and IRQ on GPIO49.
 
-To avoid blocking knob bring-up on DT, the driver can now run without an IRQ and
-poll the AVR FIFO. That allows live testing from a known-good boot by manually
-creating the I2C client:
+The driver can run from IRQs, poll the AVR FIFO for diagnostics, or both. Manual
+binding remains useful when testing from a known-good boot:
 
 ```sh
-insmod /lib/modules/$(uname -r)/kernel/drivers/input/misc/steelhead_avr.ko poll_ms=50
+insmod /lib/modules/$(uname -r)/kernel/drivers/input/misc/steelhead_avr.ko poll_ms=50 force_poll=1 debug_events=1
 echo 'steelhead-avr 0x20' >/sys/bus/i2c/devices/i2c-1/new_device
 cat /proc/bus/input/devices
 ```
@@ -50,9 +47,15 @@ printf 'NQ_INPUT_I2C_ADAPTER=i2c-1\nNQ_INPUT_I2C_ADDR=0x20\n' >/tmp/input.env
 ```
 
 Current release rootfs builds default to `NQ_INPUT_I2C_ADAPTER=i2c-1`,
-`NQ_INPUT_I2C_ADDR=0x20`, and `NQ_AVR_POLL_MS=50`. Set
-`NQ_INPUT_ENABLE=0` in `/etc/nexusq/input.env` to disable automatic
-front-panel binding, or override those values there for diagnostics.
+`NQ_INPUT_I2C_ADDR=0x20`, `NQ_AVR_POLL_MS=50`, `NQ_AVR_FORCE_POLL=1`, and
+`NQ_AVR_LEGACY_INIT=1`.
+Set `NQ_INPUT_ENABLE=0` in `/etc/nexusq/input.env` to disable automatic
+front-panel binding, or override these values there for diagnostics:
+
+- `NQ_AVR_FORCE_POLL=1`: poll even when the IRQ is registered
+- `NQ_AVR_DEBUG_EVENTS=1`: log raw FIFO bytes
+- `NQ_AVR_RESET_PULSE_MS=100`: pulse AVR reset during probe for experiments
+- `NQ_AVR_LEGACY_INIT=0`: skip the legacy LED/control init sequence
 
 For an already-running Q, the host-side helper installs the current module and
 knob daemon over SSH, attempts the same manual bind, and starts
@@ -63,24 +66,52 @@ tools/install_front_panel_remote.sh
 ```
 
 Set `TARGET`, `NQ_INPUT_I2C_ADAPTER`, `NQ_INPUT_I2C_ADDR`,
-`NQ_AVR_POLL_MS`, or `NQ_START_KNOB_VOLUME=0` to override its defaults.
+`NQ_AVR_POLL_MS`, `NQ_AVR_FORCE_POLL`, `NQ_AVR_DEBUG_EVENTS`,
+`NQ_AVR_RESET_PULSE_MS`, or `NQ_START_KNOB_VOLUME=0` to override its defaults.
+
+## Direct AVR Debug Helper
+
+The rootfs includes `/usr/sbin/nq-avr-i2c`, a small direct I2C debug utility.
+It uses `I2C_SLAVE_FORCE`, so it can inspect the AVR even when the kernel driver
+owns the normal client. Reads and writes retry transient AVR busy responses like
+the old 3.0 driver. Avoid long direct polling while `steelhead_avr.ko` is also
+polling.
+
+Useful commands:
+
+```sh
+nq-avr-i2c dump
+nq-avr-i2c read 0x0a 2
+nq-avr-i2c mode 1
+nq-avr-i2c fifo 20 50
+```
+
+Known live register values after the 6.6 legacy init:
+
+- `0x00`: `0xff` when the FIFO is empty
+- `0x01`: `0x08` observed mute/touch threshold
+- `0x02`: LED/control mode, usually `0x01` after reset
+- `0x07`: `0x20` LED count
+- `0x08`: `0x01` hardware type
+- `0x09`: `0x01` hardware revision
+- `0x0a`: firmware `0.13` when read as two bytes
 
 ## TAS5713 Volume Daemon
 
 The userspace helper `nq-knob-volume` reads `Steelhead Front Panel` evdev
 events and adjusts the TAS5713 ALSA mixer through `amixer`.
 
-Default mixer bounds are intentionally conservative:
+Default mixer bounds use the currently tested loud passive-speaker profile:
 
 - `NQ_KNOB_CONTROL=Master Volume`
 - `NQ_KNOB_MUTE_CONTROL=Speaker Switch`
 - `NQ_KNOB_MIN=120`
-- `NQ_KNOB_MAX=207`
+- `NQ_KNOB_MAX=231`
 - `NQ_KNOB_STEP=2`
 
-`207` is the current safe cap near 0 dB. The TAS5713 control can go higher, but
-values above this are much louder and should not be the default for a shared
-release image.
+`207` is roughly 0 dB. The release default of `231` is about +12 dB and was
+validated with an external passive speaker. If playback clips or the speaker
+sounds strained, lower `NQ_KNOB_MAX` to `207`.
 
 ## Live Validation
 
@@ -88,15 +119,39 @@ Validated on a Nexus Q booted into the Linux 6.6 Debian image:
 
 - `steelhead-avr 1-0020: front panel AVR firmware 0.13`
 - `/proc/bus/input/devices` reports `Name="Steelhead Front Panel"`
-- clockwise ring motion emits `KEY_VOLUMEUP` (`code 115`) and increments
-  `Master Volume`
-- counterclockwise ring motion emits `KEY_VOLUMEDOWN` (`code 114`) and
-  decrements `Master Volume`
-- center/touch events emit `KEY_MUTE` (`code 113`) and toggle `Speaker Switch`
+- GPIO49 interrupt registration works; the IRQ count increments for AVR reset
+  notifications
+- The driver can run with `force_poll=1`, which drains the FIFO every 50 ms
+  even if GPIO49 rotation interrupts are missed.
+- AVR reset notification `0xfe` is read from the FIFO after a reset pulse
+- `nq-knob-volume` starts and preserves the current `Master Volume`
+- `nq-knob-volume` can adjust `Master Volume` through ALSA when it receives
+  `KEY_VOLUMEUP` or `KEY_VOLUMEDOWN` evdev events.
+- Physical ring rotation now produces `KEY_VOLUMEUP` and `KEY_VOLUMEDOWN`
+  events on `/dev/input/event0`, and `nq-knob-volume` drives the TAS5713
+  `Master Volume` control from those events.
 
-The first validation was run with `poll_ms=50` and the daemon range
-`120..207`. Clockwise movement raised `Master Volume` from `120` into the
-130s; counterclockwise movement lowered it again.
+The main runtime trap during bring-up was stale or hangup-killed userspace
+state after reloading the modular input driver from an ADB shell. The rootfs
+starter scripts now ignore `SIGHUP` before backgrounding daemons, and
+`nq-knob-volume` ignores `SIGHUP` directly as well.
+
+Historical testing before the final fix showed:
+
+- The Linux input bridge is registered and reports events when FIFO bytes
+  arrive.
+- The FIFO path works because reset event `0xfe` and physical ring events are
+  observed.
+- Direct FIFO polling through `/dev/i2c-1` also sees only `0xff` idle values
+  during current tests, including a 15 s capture with `steelhead_avr.ko`
+  unloaded and retrying direct I2C reads.
+- Sweeping LED/control modes `0`, `1`, `2`, and `3` did not produce motion
+  events during the available capture windows.
+
+If front-panel input appears dead during future module-reload experiments, first
+check that `nq-knob-volume` is still running and attached to the current
+`/dev/input/event0`, then restart `/sbin/nq-start-knob-volume` after the input
+driver reload.
 
 ## Future LED Work
 
