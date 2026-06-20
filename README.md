@@ -28,6 +28,8 @@ Validated on real Nexus Q hardware in June 2026:
   amplitude visualizer can drive it during Music Assistant playback.
 - An opt-in ADB-compatible debug bridge provides root Bash shell and file sync
   for trusted local bring-up networks.
+- Prototype SomaFM NFC jukebox helpers can map NFC tag/card UIDs to SomaFM
+  channel ids and start local stream playback.
 - The public boot image stays running by default; return-to-fastboot is now an
   explicit recovery command or diagnostic boot option.
 
@@ -39,6 +41,9 @@ Still experimental:
 - HDMI, S/PDIF, advanced LED effects, and cap-touch handling are not finished.
 - The LED visualizer is an early amplitude-based effect, not a frequency-band
   or Music Assistant UI-integrated visualizer yet.
+- Built-in Nexus Q NFC hardware is not described in the modern DTS yet. The
+  SomaFM jukebox plumbing is present, but onboard PN544 bring-up still needs the
+  Steelhead-specific I2C/GPIO wiring.
 - TAS5713 speaker validation has focused on one wired speaker so far; full
   stereo/channel-routing validation is still pending.
 - Wi-Fi depends on calibration from an existing stock `system` partition, or a
@@ -104,6 +109,7 @@ Music Assistant player endpoint setup is documented in
 [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md).
 LED ring control and the Squeezelite visualizer are documented in
 [LED_RING_VISUALIZER.md](LED_RING_VISUALIZER.md).
+The SomaFM NFC jukebox prototype is documented in [NFC_JUKEBOX.md](NFC_JUKEBOX.md).
 
 ## Build
 

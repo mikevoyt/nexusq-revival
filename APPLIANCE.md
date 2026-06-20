@@ -21,6 +21,8 @@ Persistent files:
 - `/etc/nexusq/wpa_supplicant.conf`
 - `/etc/nexusq/authorized_keys`
 - `/etc/nexusq/squeezelite.env`
+- `/etc/nexusq/somafm.env`
+- `/etc/nexusq/somafm-tags.conf`
 - `/etc/nexusq/adbd.env`
 - `/var/lib/nexusq/rng.seed`
 
@@ -167,6 +169,34 @@ Assistant playback so Squeezelite can release the ALSA device.
 See [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md) for the porting rationale and
 Music Assistant setup notes.
 
+## SomaFM NFC Jukebox
+
+The appliance rootfs also includes an opt-in SomaFM jukebox prototype. It maps
+NFC tag UIDs to SomaFM station ids and starts local `nq-play`/`mpg123` stream
+playback:
+
+```sh
+cat >/run/nexusq/somafm.env <<'EOF'
+NQ_NFC_JUKEBOX_ENABLE=1
+NQ_SOMAFM_STOP_SQUEEZELITE=1
+EOF
+
+cat >/run/nexusq/somafm-tags.conf <<'EOF'
+04aabbccddeeff groovesalad
+04112233445566 dronezone
+EOF
+
+/sbin/nq-provision \
+  --somafm /run/nexusq/somafm.env \
+  --somafm-tags /run/nexusq/somafm-tags.conf \
+  --start-nfc-jukebox \
+  --status
+```
+
+Use `nq-nfc-scan` to learn a card UID, `nq-somafm-play groovesalad` to test
+playback without NFC, and `nq-player-status` to inspect logs. Details and the
+built-in PN544 caveat are in [NFC_JUKEBOX.md](NFC_JUKEBOX.md).
+
 ## Host-Side Provisioning
 
 The Debian serial runner can provision persistently without writing secrets into
@@ -203,7 +233,7 @@ Manual recovery from Debian:
 Clear persistent appliance state:
 
 ```sh
-/sbin/nq-provision --clear-wifi --clear-authorized-keys --clear-squeezelite --clear-rng-seed
+/sbin/nq-provision --clear-wifi --clear-authorized-keys --clear-squeezelite --clear-somafm --clear-somafm-tags --clear-rng-seed
 ```
 
 If userspace does not start, use the Nexus Q manual fastboot procedure and boot
