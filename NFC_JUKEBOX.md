@@ -71,6 +71,29 @@ Stop local SomaFM playback:
 nq-somafm-play --stop
 ```
 
+## Bench Recovery And USB Proxy
+
+When the Q is in an unknown state during audio/NFC bring-up, a host-side watcher
+can take over as soon as any control path comes back. It tries fastboot first,
+then ADB, SSH, and USB serial. If Linux responds, it asks the Q to reboot to
+fastboot; once fastboot is visible, it temporarily boots the legacy-DMA audio
+image without flashing:
+
+```sh
+tools/nq-recover-boot-legacydma.sh
+```
+
+If the Q has USB networking but no Wi-Fi/default route, run a host-side SomaFM
+proxy and point the Q at the proxy URL:
+
+```sh
+tools/nq_somafm_usb_proxy.py --bind 0.0.0.0 --port 8766
+nq-somafm-play http://HOST_USB_IP:8766/station/secretagent
+```
+
+`HOST_USB_IP` is the Mac-side USB interface address, for example the `inet`
+address on `en12`.
+
 Check that the built-in PN544 can load and probe:
 
 ```sh
