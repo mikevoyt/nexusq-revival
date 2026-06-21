@@ -225,11 +225,13 @@ def write_binary(path, content, mode=0o644):
     set_owner_mode(path, mode)
 
 
-def make_tone_wav(seconds=0.55, rate=48000, amplitude=0.23):
+def make_tone_wav(seconds=0.9, rate=48000, amplitude=0.20):
     frames = int(rate * seconds)
     notes = (
-        (0.00, 0.26, 659.25),
-        (0.22, 0.33, 987.77),
+        (0.00, 0.32, 523.25),
+        (0.18, 0.36, 659.25),
+        (0.38, 0.40, 880.00),
+        (0.58, 0.28, 1174.66),
     )
     data = bytearray()
     for i in range(frames):
@@ -2038,6 +2040,7 @@ done
 : "${NQ_SOMAFM_RESTART_DELAY:=3}"
 : "${NQ_SOMAFM_DIRECT_PREFIX:=}"
 : "${NQ_SOMAFM_DIRECT_SUFFIX:=}"
+: "${NQ_SOMAFM_STOP_GRACE:=0.25}"
 
 usage() {
     cat <<'EOF'
@@ -2078,7 +2081,7 @@ stop_pid_file() {
     old_pid="$(cat "$pid_file" 2>/dev/null || true)"
     if pid_live "$old_pid"; then
         kill "$old_pid" 2>/dev/null || true
-        sleep 1
+        sleep "$NQ_SOMAFM_STOP_GRACE" 2>/dev/null || true
         pid_live "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
     fi
     rm -f "$pid_file"
@@ -2091,16 +2094,17 @@ stop_proc_name() {
         pid_live "$pid" || continue
         live_pids="$live_pids $pid"
     done
-    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
-    sleep 1
+    [ -n "$live_pids" ] || return 0
+    kill $live_pids 2>/dev/null || true
+    sleep "$NQ_SOMAFM_STOP_GRACE" 2>/dev/null || true
     for pid in $live_pids; do
         pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
     done
 }
 
 stop_players() {
-    stop_pid_file "$PID"
     stop_proc_name mpg123
+    stop_pid_file "$PID"
     if [ "$NQ_SOMAFM_STOP_SQUEEZELITE" = "1" ]; then
         stop_proc_name squeezelite
         rm -f /run/nq-squeezelite.pid
@@ -2195,7 +2199,7 @@ stop_players
 ) </dev/null >>"$LOG" 2>&1 &
 echo "$!" >"$PID"
 echo "nq-somafm: starting $station pid=$(cat "$PID" 2>/dev/null || true)" >&2
-sleep 1
+sleep 0.2 2>/dev/null || sleep 1
 
 if pid_live "$(cat "$PID" 2>/dev/null || true)"; then
     echo "nq-somafm: playing $station pid=$(cat "$PID")"
