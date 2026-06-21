@@ -46,9 +46,16 @@ The rootfs includes:
 - `nq-nfc-scan`
   - Prefers the built-in PN544 through Linux NFC generic netlink.
   - Falls back to `nfc-poll` for external libnfc-compatible readers.
+- `nq-nfc-map STATION_ID_OR_URL`
+  - Scans one card/tag and writes its UID-to-station mapping to
+    `/etc/nexusq/somafm-tags.conf`.
+  - Stops and restarts the jukebox loop around the scan when needed so the
+    setup flow does not race the normal listener.
 - `nq-nfc-poll`
   - Low-level built-in PN544 test helper.
   - Powers the kernel NFC device, starts a poll, and prints target UID data.
+- `nq-nfc-ack`
+  - Plays the short tap-confirmation chime before SomaFM playback starts.
 - `/sbin/nq-start-nfc-jukebox`
   - Starts an opt-in NFC polling loop.
   - Maps tag UID to station id using `/etc/nexusq/somafm-tags.conf`.
@@ -104,40 +111,41 @@ ls -l /sys/class/nfc
 nq-nfc-poll --list
 ```
 
-## Learn Card UIDs
+## Make A Reproducible Card Deck
 
-Tap each card/tag and record the UID:
+The easiest setup path does not require programming NDEF data onto the cards.
+The Q maps each card's immutable UID to a SomaFM station. You can still write a
+human-readable payload like `somafm:groovesalad` onto the card for phone-based
+inspection, but the Q only needs the UID map.
 
-```sh
-nq-nfc-scan --timeout 20
-```
-
-Force a specific scanner backend when debugging:
-
-```sh
-NQ_NFC_SCAN_BACKEND=kernel nq-nfc-scan --timeout 20
-NQ_NFC_SCAN_BACKEND=libnfc nq-nfc-scan
-```
-
-The prototype maps immutable card UIDs instead of requiring NDEF parsing. You
-can still program the cards with a text or URL payload such as
-`somafm:groovesalad` for your own inspection tools, but the Q uses the UID map.
-
-Create a tag map:
-
-```sh
-cat >/run/nexusq/somafm-tags.conf <<'EOF'
-# UID              SomaFM station id
-04aabbccddeeff     groovesalad
-04112233445566     dronezone
-04778899aabbcc     secretagent
-EOF
-```
-
-Channel ids are visible directly on the Q:
+List current SomaFM station ids:
 
 ```sh
 nq-somafm-play --list
+```
+
+Register each printed card by running one command and tapping that card:
+
+```sh
+nq-nfc-map groovesalad
+nq-nfc-map dronezone
+nq-nfc-map secretagent
+```
+
+The command writes persistent mappings to `/etc/nexusq/somafm-tags.conf`.
+Re-running it for the same physical card replaces that card's old station.
+
+If you already know a UID from another reader or from the unknown-tag log, write
+it directly:
+
+```sh
+nq-nfc-map --uid 04:11:22:33:44:55:66 secretagent
+```
+
+Check the final map:
+
+```sh
+nq-nfc-map --list
 ```
 
 Common examples: `groovesalad`, `dronezone`, `secretagent`, `spacestation`,
@@ -151,19 +159,22 @@ Create runtime config:
 ```sh
 cat >/run/nexusq/somafm.env <<'EOF'
 NQ_NFC_JUKEBOX_ENABLE=1
-NQ_NFC_COOLDOWN_SECONDS=5
+NQ_NFC_JUKEBOX_RESTART=1
+NQ_NFC_COOLDOWN_SECONDS=3
+NQ_NFC_IDLE_SLEEP=0
+NQ_NFC_SCAN_TIMEOUT=1
+NQ_NFC_ACK_ENABLE=1
 NQ_SOMAFM_STOP_SQUEEZELITE=1
-NQ_SOMAFM_MASTER_VOLUME=190
-NQ_SOMAFM_SPEAKER_VOLUME=204
+NQ_SOMAFM_MASTER_VOLUME=preserve
+NQ_SOMAFM_SPEAKER_VOLUME=preserve
 EOF
 ```
 
-Persist the config and tag map:
+Persist the config and start the listener:
 
 ```sh
 /sbin/nq-provision \
   --somafm /run/nexusq/somafm.env \
-  --somafm-tags /run/nexusq/somafm-tags.conf \
   --start-nfc-jukebox \
   --status
 ```
@@ -176,11 +187,11 @@ cat /run/nexusq-nfc-jukebox.log
 cat /run/nexusq-nfc-unknown-tags.log
 ```
 
-Unknown cards are appended to `/run/nexusq-nfc-unknown-tags.log`, which makes
-it easy to tap a fresh card, copy its UID into the tag map, and restart:
+Unknown cards are appended to `/run/nexusq-nfc-unknown-tags.log`. To map one of
+those UIDs without tapping again:
 
 ```sh
-NQ_NFC_JUKEBOX_RESTART=1 /sbin/nq-start-nfc-jukebox
+nq-nfc-map --uid "$(tail -n 1 /run/nexusq-nfc-unknown-tags.log)" groovesalad
 ```
 
 ## Tag Map Format

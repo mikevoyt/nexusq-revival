@@ -31,6 +31,8 @@ Validated on real Nexus Q hardware in June 2026:
 - Prototype SomaFM NFC jukebox helpers can scan NFC tag/card UIDs through the
   built-in PN544 or an external reader, map them to SomaFM channel ids, and
   start local stream playback.
+- Built-in PN544 NFC card scans have been validated on real hardware, including
+  UID-to-station playback through the SomaFM jukebox loop.
 - The public boot image stays running by default; return-to-fastboot is now an
   explicit recovery command or diagnostic boot option.
 
@@ -42,9 +44,6 @@ Still experimental:
 - HDMI, S/PDIF, advanced LED effects, and cap-touch handling are not finished.
 - The LED visualizer is an early amplitude-based effect, not a frequency-band
   or Music Assistant UI-integrated visualizer yet.
-- Built-in PN544 NFC is wired into the modern DTS and has load-on-demand kernel
-  modules plus a kernel-NFC scanner, but full real-card validation is still in
-  progress.
 - TAS5713 speaker validation has focused on one wired speaker so far; full
   stereo/channel-routing validation is still pending.
 - Wi-Fi depends on calibration from an existing stock `system` partition, or a

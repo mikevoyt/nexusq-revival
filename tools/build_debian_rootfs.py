@@ -2362,6 +2362,259 @@ exit "$rc"
 """,
         0o755,
     )
+    write_text(
+        rootfs / "usr/bin/nq-nfc-map",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_NFC_TAGS:=/etc/nexusq/somafm-tags.conf}"
+: "${NQ_NFC_SCAN_BACKEND:=auto}"
+: "${NQ_NFC_MAP_TIMEOUT:=20}"
+: "${NQ_NFC_MAP_VALIDATE:=1}"
+: "${NQ_NFC_MAP_RESTART:=auto}"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  nq-nfc-map STATION_ID_OR_URL
+  nq-nfc-map --uid UID STATION_ID_OR_URL
+  nq-nfc-map --list
+
+Scan one NFC card/tag and persist its UID mapping to a SomaFM station.
+
+Options:
+  --uid UID             Use a known UID instead of scanning a card.
+  --tags PATH           Tag map path. Default: /etc/nexusq/somafm-tags.conf
+  --backend NAME        Scanner backend: auto, kernel, or libnfc.
+  --timeout SECONDS     Scan timeout. Default: 20.
+  --restart             Restart the jukebox after writing the map.
+  --no-restart          Do not restart the jukebox after writing the map.
+  --validate            Resolve the SomaFM station before writing. Default.
+  --no-validate         Skip station resolution.
+  --list                Print the current UID-to-station map.
+  -h, --help            Show this help.
+
+Examples:
+  nq-somafm-play --list
+  nq-nfc-map groovesalad
+  nq-nfc-map dronezone
+  nq-nfc-map --uid 04:11:22:33:44:55:66 secretagent
+USAGE
+}
+
+die() {
+    echo "nq-nfc-map: $*" >&2
+    exit 1
+}
+
+normalize_uid() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ':-'
+}
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stop_jukebox() {
+    [ -s /run/nq-nfc-jukebox.pid ] || return 1
+    old_pid="$(cat /run/nq-nfc-jukebox.pid 2>/dev/null || true)"
+    pid_live "$old_pid" || return 1
+    kill -TERM "-$old_pid" 2>/dev/null || true
+    kill "$old_pid" 2>/dev/null || true
+    sleep 1
+    pid_live "$old_pid" && kill -KILL "-$old_pid" 2>/dev/null || true
+    pid_live "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
+    rm -f /run/nq-nfc-jukebox.pid
+    return 0
+}
+
+start_jukebox() {
+    NQ_NFC_JUKEBOX_RESTART=1 /sbin/nq-start-nfc-jukebox >/dev/null 2>&1 || \\
+        echo "nq-nfc-map: warning: failed to restart NFC jukebox" >&2
+}
+
+restart_on_exit=0
+cleanup_jukebox() {
+    [ "$restart_on_exit" = "1" ] || return 0
+    restart_on_exit=0
+    start_jukebox
+}
+
+list_map() {
+    if [ ! -r "$NQ_NFC_TAGS" ]; then
+        echo "nq-nfc-map: no tag map at $NQ_NFC_TAGS" >&2
+        exit 1
+    fi
+    awk '
+        BEGIN { FS = "[ \\t]+"; printf "%-18s %s\\n", "UID", "STATION" }
+        /^[ \\t]*(#|$)/ { next }
+        {
+            uid = tolower($1)
+            gsub(/[:-]/, "", uid)
+            printf "%-18s %s\\n", uid, $2
+        }
+    ' "$NQ_NFC_TAGS"
+}
+
+uid=
+list=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --uid)
+            [ "$#" -ge 2 ] || die "--uid requires a UID"
+            uid="$2"
+            shift 2
+            ;;
+        --tags)
+            [ "$#" -ge 2 ] || die "--tags requires a path"
+            NQ_NFC_TAGS="$2"
+            shift 2
+            ;;
+        --backend)
+            [ "$#" -ge 2 ] || die "--backend requires auto, kernel, or libnfc"
+            NQ_NFC_SCAN_BACKEND="$2"
+            shift 2
+            ;;
+        --timeout)
+            [ "$#" -ge 2 ] || die "--timeout requires seconds"
+            NQ_NFC_MAP_TIMEOUT="$2"
+            shift 2
+            ;;
+        --restart)
+            NQ_NFC_MAP_RESTART=1
+            shift
+            ;;
+        --no-restart)
+            NQ_NFC_MAP_RESTART=0
+            shift
+            ;;
+        --validate)
+            NQ_NFC_MAP_VALIDATE=1
+            shift
+            ;;
+        --no-validate)
+            NQ_NFC_MAP_VALIDATE=0
+            shift
+            ;;
+        --list)
+            list=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            die "unknown option: $1"
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ "$list" -eq 1 ]; then
+    list_map
+    exit 0
+fi
+[ "$#" -eq 1 ] || { usage >&2; exit 2; }
+
+station="$1"
+case "$station" in
+    ""|*[![:graph:]]*) die "station must be one non-empty word" ;;
+esac
+
+case "$NQ_NFC_SCAN_BACKEND" in
+    auto|kernel|libnfc) ;;
+    *) die "invalid backend: $NQ_NFC_SCAN_BACKEND" ;;
+esac
+
+if [ "$NQ_NFC_MAP_VALIDATE" = "1" ] && command -v nq-somafm-url >/dev/null 2>&1; then
+    nq-somafm-url "$station" >/dev/null || \\
+        die "station did not resolve: $station; use --no-validate to write anyway"
+fi
+
+jukebox_was_running=0
+
+if [ -z "$uid" ]; then
+    command -v nq-nfc-scan >/dev/null 2>&1 || die "nq-nfc-scan is not installed"
+    if [ -s /run/nq-nfc-jukebox.pid ]; then
+        old_pid="$(cat /run/nq-nfc-jukebox.pid 2>/dev/null || true)"
+        pid_live "$old_pid" && jukebox_was_running=1
+    fi
+    if [ "$jukebox_was_running" -eq 1 ] && [ "$NQ_NFC_MAP_RESTART" != "0" ]; then
+        restart_on_exit=1
+        trap cleanup_jukebox EXIT INT TERM
+    fi
+    stop_jukebox >/dev/null 2>&1 || true
+    echo "nq-nfc-map: tap the card for $station" >&2
+    uid="$(nq-nfc-scan --uid-only --backend "$NQ_NFC_SCAN_BACKEND" --timeout "$NQ_NFC_MAP_TIMEOUT" 2>/dev/null | awk '/^[0-9a-f]+$/ { print; exit }')"
+fi
+
+uid="$(normalize_uid "$uid")"
+case "$uid" in
+    ""|*[!0-9a-f]*) die "invalid UID: $uid" ;;
+esac
+
+mkdir -p "$(dirname "$NQ_NFC_TAGS")" || die "cannot create $(dirname "$NQ_NFC_TAGS")"
+tmp="${NQ_NFC_TAGS}.tmp.$$"
+if [ -r "$NQ_NFC_TAGS" ]; then
+    awk -v target="$uid" '
+        BEGIN { FS = "[ \\t]+" }
+        /^[ \\t]*(#|$)/ { print; next }
+        {
+            key = tolower($1)
+            gsub(/[:-]/, "", key)
+            if (key != target) print
+        }
+    ' "$NQ_NFC_TAGS" >"$tmp" || die "failed to rewrite $NQ_NFC_TAGS"
+else
+    {
+        echo "# UID              SomaFM station id"
+    } >"$tmp" || die "failed to create $NQ_NFC_TAGS"
+fi
+printf '%-18s %s\\n' "$uid" "$station" >>"$tmp" || die "failed to append mapping"
+chmod 644 "$tmp" 2>/dev/null || true
+chown 0:0 "$tmp" 2>/dev/null || true
+mv "$tmp" "$NQ_NFC_TAGS" || die "failed to install $NQ_NFC_TAGS"
+
+echo "nq-nfc-map: mapped $uid -> $station in $NQ_NFC_TAGS"
+
+case "$NQ_NFC_MAP_RESTART" in
+    1)
+        restart_on_exit=0
+        trap - EXIT INT TERM
+        start_jukebox
+        ;;
+    auto)
+        if [ "$jukebox_was_running" -ne 0 ]; then
+            restart_on_exit=0
+            trap - EXIT INT TERM
+            start_jukebox
+        fi
+        ;;
+esac
+""",
+        0o755,
+    )
     write_binary(rootfs / "usr/share/nexusq/nfc-ack.wav", make_tone_wav(), 0o644)
     write_text(
         rootfs / "usr/bin/nq-nfc-ack",
