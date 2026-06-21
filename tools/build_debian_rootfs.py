@@ -1981,6 +1981,8 @@ done
 : "${NQ_SOMAFM_DEVBUFFER:=0.5}"
 : "${NQ_SOMAFM_BUFFER:=1024}"
 : "${NQ_SOMAFM_PRELOAD:=1}"
+: "${NQ_SOMAFM_RESTART:=1}"
+: "${NQ_SOMAFM_RESTART_DELAY:=3}"
 
 usage() {
     cat <<'EOF'
@@ -2088,6 +2090,7 @@ stop_players
 } >>"$LOG"
 
 (
+    trap '' HUP
     export NQ_PLAY_MIXER_CARD="$NQ_SOMAFM_MIXER_CARD"
     export NQ_PLAY_MASTER_VOLUME="$NQ_SOMAFM_MASTER_VOLUME"
     export NQ_PLAY_SPEAKER_VOLUME="$NQ_SOMAFM_SPEAKER_VOLUME"
@@ -2098,7 +2101,15 @@ stop_players
     export NQ_PLAY_DEVBUFFER="$NQ_SOMAFM_DEVBUFFER"
     export NQ_PLAY_BUFFER="$NQ_SOMAFM_BUFFER"
     export NQ_PLAY_PRELOAD="$NQ_SOMAFM_PRELOAD"
-    exec /usr/bin/nq-play "$url"
+    if [ "$NQ_SOMAFM_RESTART" != "1" ]; then
+        exec /usr/bin/nq-play "$url"
+    fi
+    while :; do
+        /usr/bin/nq-play "$url"
+        rc="$?"
+        echo "[nq-somafm] player exited rc=$rc; restarting in ${NQ_SOMAFM_RESTART_DELAY}s"
+        sleep "$NQ_SOMAFM_RESTART_DELAY"
+    done
 ) </dev/null >>"$LOG" 2>&1 &
 echo "$!" >"$PID"
 echo "nq-somafm: starting $station pid=$(cat "$PID" 2>/dev/null || true)" >&2
