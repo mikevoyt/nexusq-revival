@@ -2310,7 +2310,10 @@ while true; do
     now="$(pid_now)"
 
     if [ -z "$uid" ]; then
-        [ "$rc" -eq 0 ] || log "poll exited rc=$rc"
+        case "$rc" in
+            0|1|16|62) ;;
+            *) log "poll exited rc=$rc" ;;
+        esac
         last_uid=
         sleep "$NQ_NFC_IDLE_SLEEP"
         continue
@@ -2383,8 +2386,10 @@ stop_old() {
     [ -s "$PID" ] || return 0
     old_pid="$(cat "$PID" 2>/dev/null || true)"
     if pid_live "$old_pid"; then
+        kill -TERM "-$old_pid" 2>/dev/null || true
         kill "$old_pid" 2>/dev/null || true
         sleep 1
+        pid_live "$old_pid" && kill -KILL "-$old_pid" 2>/dev/null || true
         pid_live "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
     fi
     rm -f "$PID"
