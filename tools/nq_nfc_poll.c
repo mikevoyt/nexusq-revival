@@ -165,7 +165,7 @@ static int verbose;
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s [--timeout seconds] [--device index] [--protocols mask] [--list] [-v]\n",
+		"usage: %s [--timeout seconds] [--device index] [--protocols mask] [--list] [--loop] [--uid-only] [-v]\n",
 		argv0);
 }
 
@@ -592,6 +592,31 @@ static void print_hex(const uint8_t *buf, size_t len)
 		printf("%02x", buf[i]);
 }
 
+static int print_target_uid(const struct nfc_target *target, bool uid_only)
+{
+	if (!uid_only)
+		printf("nq-nfc-poll: target index=%u protocols=0x%08x sens_res=0x%04x sel_res=0x%02x\n",
+		       target->idx, target->protocols, target->sens_res,
+		       target->sel_res);
+	if (target->nfcid1_len) {
+		if (!uid_only)
+			printf("nq-nfc-poll: uid=");
+		print_hex(target->nfcid1, target->nfcid1_len);
+		putchar('\n');
+		fflush(stdout);
+		return 0;
+	}
+	if (target->iso15693_uid_len) {
+		if (!uid_only)
+			printf("nq-nfc-poll: iso15693_uid=");
+		print_hex(target->iso15693_uid, target->iso15693_uid_len);
+		putchar('\n');
+		fflush(stdout);
+		return 0;
+	}
+	return ENOENT;
+}
+
 static int get_targets(int fd, const struct nfc_family *family, uint32_t dev_idx,
 		       struct nfc_target *targets, size_t max_targets)
 {
@@ -764,6 +789,43 @@ static int wait_for_targets_dump(int fd, const struct nfc_family *family,
 	return 0;
 }
 
+static void wait_for_targets_gone(int fd, const struct nfc_family *family,
+				  uint32_t dev_idx)
+{
+	struct nfc_target targets[MAX_TARGETS];
+	int empty_count = 0;
+
+	for (;;) {
+		int n_targets = get_targets(fd, family, dev_idx, targets, MAX_TARGETS);
+
+		if (n_targets <= 0) {
+			empty_count++;
+			if (empty_count >= 2)
+				return;
+		} else {
+			empty_count = 0;
+		}
+		usleep(200000);
+	}
+}
+
+static int start_poll_recover(int fd, const struct nfc_family *family,
+			      uint32_t dev_idx, uint32_t poll_protocols)
+{
+	int rc = EIO;
+
+	for (int attempt = 0; attempt < 5; attempt++) {
+		rc = start_poll(fd, family, dev_idx, poll_protocols);
+		if (!rc)
+			return 0;
+		if (rc != EBUSY && rc != ETIMEDOUT && rc != ETIME)
+			return rc;
+		(void)stop_poll(fd, family, dev_idx);
+		usleep(500000);
+	}
+	return rc;
+}
+
 static int parse_u32_arg(const char *s, uint32_t *out)
 {
 	char *end = NULL;
@@ -781,6 +843,9 @@ int main(int argc, char **argv)
 {
 	int timeout_sec = 15;
 	bool list_only = false;
+	bool loop = false;
+	bool uid_only = false;
+	bool poll_started = false;
 	bool device_set = false;
 	uint32_t selected_device = 0;
 	uint32_t requested_protocols = DEFAULT_PROTOCOLS;
@@ -814,6 +879,10 @@ int main(int argc, char **argv)
 				return usage(argv[0]), 2;
 		} else if (strcmp(argv[i], "--list") == 0) {
 			list_only = true;
+		} else if (strcmp(argv[i], "--loop") == 0) {
+			loop = true;
+		} else if (strcmp(argv[i], "--uid-only") == 0) {
+			uid_only = true;
 		} else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
 			verbose = 1;
 		} else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -883,22 +952,19 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
-	rc = start_poll(fd, &family, dev->idx, poll_protocols);
-	if (rc == EBUSY) {
-		(void)stop_poll(fd, &family, dev->idx);
-		rc = start_poll(fd, &family, dev->idx, poll_protocols);
-	}
+	rc = start_poll_recover(fd, &family, dev->idx, poll_protocols);
 	if (rc) {
 		errno = rc;
 		perror("nq-nfc-poll: NFC start poll failed");
 		goto out;
 	}
+	poll_started = true;
 
 	if (verbose)
 		fprintf(stderr, "nq-nfc-poll: waiting up to %d seconds for a tag\n",
 			timeout_sec);
 
-	{
+	for (;;) {
 		struct nfc_target targets[MAX_TARGETS];
 		int n_targets;
 
@@ -907,7 +973,10 @@ int main(int argc, char **argv)
 						    timeout_sec * 1000);
 			if (rc <= 0) {
 				if (rc == 0)
-					fprintf(stderr, "nq-nfc-poll: no tag found before timeout\n");
+					if (!loop || verbose)
+						fprintf(stderr, "nq-nfc-poll: no tag found before timeout\n");
+				if (loop)
+					continue;
 				(void)stop_poll(fd, &family, dev->idx);
 				rc = 1;
 				goto out;
@@ -923,38 +992,45 @@ int main(int argc, char **argv)
 			goto out;
 		}
 		if (n_targets == 0) {
-			fprintf(stderr, "nq-nfc-poll: no tag found before timeout\n");
+			if (!loop || verbose)
+				fprintf(stderr, "nq-nfc-poll: no tag found before timeout\n");
+			if (loop)
+				continue;
 			(void)stop_poll(fd, &family, dev->idx);
 			rc = 1;
 			goto out;
 		}
 
 		for (int i = 0; i < n_targets; i++) {
-			printf("nq-nfc-poll: target index=%u protocols=0x%08x sens_res=0x%04x sel_res=0x%02x\n",
-			       targets[i].idx, targets[i].protocols,
-			       targets[i].sens_res, targets[i].sel_res);
-			if (targets[i].nfcid1_len) {
-				printf("nq-nfc-poll: uid=");
-				print_hex(targets[i].nfcid1, targets[i].nfcid1_len);
-				putchar('\n');
+			if (print_target_uid(&targets[i], uid_only) == 0) {
 				rc = 0;
-				goto out;
-			}
-			if (targets[i].iso15693_uid_len) {
-				printf("nq-nfc-poll: iso15693_uid=");
-				print_hex(targets[i].iso15693_uid,
-					  targets[i].iso15693_uid_len);
-				putchar('\n');
-				rc = 0;
-				goto out;
+				if (!loop)
+					goto out;
+				wait_for_targets_gone(fd, &family, dev->idx);
+				rc = start_poll_recover(fd, &family, dev->idx,
+							poll_protocols);
+				if (rc) {
+					errno = rc;
+					perror("nq-nfc-poll: NFC restart poll failed");
+					goto out;
+				}
+				poll_started = true;
+				goto next_poll;
 			}
 		}
+
+		fprintf(stderr, "nq-nfc-poll: tag found without printable UID\n");
+		if (!loop) {
+			rc = 1;
+			goto out;
+		}
+next_poll:
+		;
 	}
 
-	fprintf(stderr, "nq-nfc-poll: tag found without printable UID\n");
-	rc = 1;
-
 out:
+	if (fd >= 0 && poll_started && !loop && dev)
+		(void)stop_poll(fd, &family, dev->idx);
 	if (fd >= 0)
 		close(fd);
 	return rc;
