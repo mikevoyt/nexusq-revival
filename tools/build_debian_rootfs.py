@@ -1599,6 +1599,7 @@ done
 : "${NQ_ADBD_ENABLE:=1}"
 : "${NQ_ADBD_PORT:=5555}"
 : "${NQ_ADBD_SHELL:=}"
+: "${NQ_ADBD_RESTART:=0}"
 export NQ_ADBD_SHELL
 
 pid_live() {
@@ -1619,6 +1620,20 @@ adbd_live() {
     return 1
 }
 
+stop_adbd() {
+    live_pids=
+    for pid in $(pgrep -x nq-adbd-lite 2>/dev/null || pidof nq-adbd-lite 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
+    sleep 1
+    for pid in $live_pids; do
+        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+    rm -f "$PID"
+}
+
 if [ "$NQ_ADBD_ENABLE" != "1" ]; then
     echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1 to enable"
     exit 0
@@ -1627,6 +1642,10 @@ fi
 if [ ! -x /usr/sbin/nq-adbd-lite ]; then
     echo "[nq-adbd-lite] /usr/sbin/nq-adbd-lite missing"
     exit 0
+fi
+
+if [ "$NQ_ADBD_RESTART" = "1" ]; then
+    stop_adbd
 fi
 
 if [ -s "$PID" ]; then
@@ -2020,6 +2039,7 @@ case "${1:-}" in
 esac
 
 station="$1"
+echo "nq-somafm: resolving $station" >&2
 url="$(/usr/bin/nq-somafm-url "$station")" || exit 1
 
 mkdir -p /run /run/nexusq
@@ -2045,6 +2065,7 @@ stop_players
     exec /usr/bin/nq-play "$url"
 ) </dev/null >>"$LOG" 2>&1 &
 echo "$!" >"$PID"
+echo "nq-somafm: starting $station pid=$(cat "$PID" 2>/dev/null || true)" >&2
 sleep 1
 
 if pid_live "$(cat "$PID" 2>/dev/null || true)"; then
