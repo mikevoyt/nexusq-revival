@@ -193,9 +193,10 @@ EOF
   --status
 ```
 
-Use `nq-nfc-scan` to learn a card UID, `nq-somafm-play groovesalad` to test
-playback without NFC, and `nq-player-status` to inspect logs. Built-in PN544
-bring-up and external-reader fallback details are in
+Use `nq-somafm-play --list` to see station ids, `nq-nfc-scan` to learn a card
+UID, `nq-somafm-play groovesalad` to test playback without NFC, and
+`nq-player-status` to inspect logs. Built-in PN544 bring-up and
+external-reader fallback details are in
 [NFC_JUKEBOX.md](NFC_JUKEBOX.md).
 
 ## Host-Side Provisioning

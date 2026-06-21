@@ -36,10 +36,13 @@ The rootfs includes:
     `http://somafm.com/m3u/groovesalad.m3u`.
   - The default is HTTP because a freshly booted Q may still have a 1970 clock,
     which breaks HTTPS certificate validation before time is synchronized.
+- `nq-somafm-stations`
+  - Lists current SomaFM station ids and names from the SomaFM channel feed.
 - `nq-somafm-play STATION_ID_OR_URL`
   - Stops prior local `mpg123` playback.
   - Stops Squeezelite by default so ALSA is available.
   - Starts the SomaFM stream through `nq-play`.
+  - Use `nq-somafm-play --list` for current station ids.
 - `nq-nfc-scan`
   - Prefers the built-in PN544 through Linux NFC generic netlink.
   - Falls back to `nfc-poll` for external libnfc-compatible readers.
@@ -55,6 +58,8 @@ The rootfs includes:
 Boot the Q with Wi-Fi provisioned, then test a station without NFC:
 
 ```sh
+nq-somafm-play --help
+nq-somafm-play --list
 nq-somafm-url groovesalad
 nq-somafm-play groovesalad
 tail -n 80 /run/nexusq-somafm.log
@@ -105,10 +110,10 @@ cat >/run/nexusq/somafm-tags.conf <<'EOF'
 EOF
 ```
 
-Channel ids are visible in SomaFM's channel feed:
+Channel ids are visible directly on the Q:
 
 ```sh
-curl -fsSL https://somafm.com/channels.xml
+nq-somafm-play --list
 ```
 
 Common examples: `groovesalad`, `dronezone`, `secretagent`, `spacestation`,

@@ -1714,6 +1714,87 @@ exec mpg123 \\
         0o755,
     )
     write_text(
+        rootfs / "usr/bin/nq-somafm-stations",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+usage() {
+    cat <<'EOF'
+usage:
+  nq-somafm-stations
+  nq-somafm-stations --help
+
+List current SomaFM station ids and names.
+
+Environment:
+  NQ_SOMAFM_CHANNELS_URL      Channel feed URL
+  NQ_SOMAFM_CONNECT_TIMEOUT   curl connect timeout seconds
+  NQ_SOMAFM_MAX_TIME          curl max time seconds
+EOF
+}
+
+case "${1:-}" in
+    "")
+        ;;
+    -h|--help)
+        [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+        usage
+        exit 0
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_SOMAFM_CHANNELS_URL:=http://somafm.com/channels.xml}"
+: "${NQ_SOMAFM_CONNECT_TIMEOUT:=10}"
+: "${NQ_SOMAFM_MAX_TIME:=20}"
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo "nq-somafm-stations: curl is not installed" >&2
+    exit 1
+fi
+
+data="$(curl -fsSL --connect-timeout "$NQ_SOMAFM_CONNECT_TIMEOUT" --max-time "$NQ_SOMAFM_MAX_TIME" "$NQ_SOMAFM_CHANNELS_URL")" || {
+    echo "nq-somafm-stations: failed to fetch $NQ_SOMAFM_CHANNELS_URL" >&2
+    exit 1
+}
+
+printf '%s\\n' "$data" | awk '
+    function trim(text) {
+        sub(/^[[:space:]]*/, "", text)
+        sub(/[[:space:]]*$/, "", text)
+        return text
+    }
+    /<channel id="/ {
+        id = $0
+        sub(/^.*<channel id="/, "", id)
+        sub(/".*$/, "", id)
+        next
+    }
+    /<title>/ && id != "" {
+        title = $0
+        sub(/^.*<title><!\\[CDATA\\[/, "", title)
+        sub(/\\]\\]><\\/title>.*$/, "", title)
+        sub(/^.*<title>/, "", title)
+        sub(/<\\/title>.*$/, "", title)
+        printf "%-18s %s\\n", id, trim(title)
+        id = ""
+    }
+'
+""",
+        0o755,
+    )
+    write_text(
         rootfs / "usr/bin/nq-somafm-url",
         """#!/bin/sh
 
@@ -1721,11 +1802,33 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export PATH
 
 usage() {
-    echo "usage: nq-somafm-url STATION_ID_OR_URL" >&2
+    cat <<'EOF'
+usage:
+  nq-somafm-url STATION_ID_OR_URL
+  nq-somafm-url --help
+
+Resolve a SomaFM station id, somafm: URI, playlist URL, or direct stream URL
+to the first playable stream URL.
+
+Examples:
+  nq-somafm-url groovesalad
+  nq-somafm-url somafm:dronezone
+  nq-somafm-url http://somafm.com/m3u/secretagent.m3u
+
+Use nq-somafm-play --list to show current station ids.
+EOF
 }
 
+case "${1:-}" in
+    -h|--help)
+        [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+        usage
+        exit 0
+        ;;
+esac
+
 if [ "$#" -ne 1 ]; then
-    usage
+    usage >&2
     exit 2
 fi
 
@@ -1805,7 +1908,6 @@ export PATH
 
 LOG=/run/nexusq-somafm.log
 PID=/run/nq-somafm.pid
-mkdir -p /run /run/nexusq
 
 for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
     [ -r "$env" ] || continue
@@ -1824,6 +1926,30 @@ done
 : "${NQ_SOMAFM_DEVBUFFER:=0.5}"
 : "${NQ_SOMAFM_BUFFER:=1024}"
 : "${NQ_SOMAFM_PRELOAD:=1}"
+
+usage() {
+    cat <<'EOF'
+usage:
+  nq-somafm-play STATION_ID_OR_URL
+  nq-somafm-play --list
+  nq-somafm-play --stop
+  nq-somafm-play --help
+
+Play a SomaFM station id, somafm: URI, playlist URL, or direct stream URL.
+
+Examples:
+  nq-somafm-play groovesalad
+  nq-somafm-play dronezone
+  nq-somafm-play somafm:secretagent
+
+Commands:
+  --list   List current SomaFM station ids and names.
+  --stop   Stop local SomaFM playback.
+
+Logs:
+  /run/nexusq-somafm.log
+EOF
+}
 
 pid_live() {
     pid="$1"
@@ -1869,13 +1995,26 @@ stop_players() {
     fi
 }
 
+if [ "$#" -ne 1 ]; then
+    usage >&2
+    exit 2
+fi
+
 case "${1:-}" in
+    --list)
+        exec /usr/bin/nq-somafm-stations
+        ;;
     --stop)
         stop_players
         exit 0
         ;;
-    ""|-h|--help)
-        echo "usage: nq-somafm-play [--stop] STATION_ID_OR_URL" >&2
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    --*)
+        echo "nq-somafm-play: unknown option: $1" >&2
+        usage >&2
         exit 2
         ;;
 esac
@@ -1883,6 +2022,7 @@ esac
 station="$1"
 url="$(/usr/bin/nq-somafm-url "$station")" || exit 1
 
+mkdir -p /run /run/nexusq
 stop_players
 : >"$LOG"
 {
