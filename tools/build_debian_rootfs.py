@@ -2,10 +2,12 @@
 
 import argparse
 import lzma
+import math
 import os
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import urllib.request
@@ -44,6 +46,10 @@ EXTRA_PACKAGES = {
     "wireless-regdb",
     "firmware-brcm80211",
     "curl",
+    "libccid",
+    "libfreefare-bin",
+    "libnfc-bin",
+    "pcscd",
     "vim-tiny",
 }
 
@@ -211,6 +217,45 @@ def write_text(path, content, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     set_owner_mode(path, mode)
+
+
+def write_binary(path, content, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    set_owner_mode(path, mode)
+
+
+def make_tone_wav(seconds=0.55, rate=48000, amplitude=0.23):
+    frames = int(rate * seconds)
+    notes = (
+        (0.00, 0.26, 659.25),
+        (0.22, 0.33, 987.77),
+    )
+    data = bytearray()
+    for i in range(frames):
+        t = i / rate
+        mixed = 0.0
+        for start, duration, freq in notes:
+            local = t - start
+            if local < 0 or local >= duration:
+                continue
+            env = min(1.0, local / 0.018, (duration - local) / 0.075)
+            phase = 2 * math.pi * freq * local
+            mixed += env * (math.sin(phase) + 0.28 * math.sin(phase * 2))
+        mixed = max(-1.0, min(1.0, mixed * amplitude))
+        sample = int(32767 * mixed)
+        data.extend(struct.pack("<hh", sample, sample))
+    byte_rate = rate * 2 * 2
+    block_align = 2 * 2
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, 2, rate, byte_rate, block_align, 16)
+        + b"data"
+        + struct.pack("<I", len(data))
+        + bytes(data)
+    )
 
 
 def random_password_hash():
@@ -408,6 +453,18 @@ else
     echo "squeezelite: persistent config missing"
 fi
 
+if [ -s /etc/nexusq/somafm.env ]; then
+    echo "somafm: persistent config present"
+else
+    echo "somafm: persistent config missing"
+fi
+
+if [ -s /etc/nexusq/somafm-tags.conf ]; then
+    echo "nfc-jukebox: persistent tag map present"
+else
+    echo "nfc-jukebox: persistent tag map missing"
+fi
+
 /sbin/nq-autoreboot-status 2>/dev/null || true
 
 if [ -e /sys/class/net/wlan0 ]; then
@@ -422,16 +479,55 @@ else
     echo "ssh: dropbear not running"
 fi
 
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
 proc_name_live() {
     name="$1"
     for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
-        [ -r "/proc/$pid/status" ] || continue
-        state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
-        [ "$state" = "Z" ] && continue
-        return 0
+        pid_live "$pid" && return 0
     done
     return 1
 }
+
+pid_file_live() {
+    pid_file="$1"
+    [ -s "$pid_file" ] || return 1
+    pid_live "$(cat "$pid_file" 2>/dev/null || true)"
+}
+
+if ls /sys/class/nfc/nfc* >/dev/null 2>&1; then
+    for dev in /sys/class/nfc/nfc*; do
+        [ -e "$dev" ] || continue
+        echo "nfc: kernel device $(basename "$dev") present"
+    done
+else
+    echo "nfc: kernel device missing"
+fi
+
+if command -v nq-nfc-poll >/dev/null 2>&1; then
+    echo "nfc: kernel poller installed"
+else
+    echo "nfc: kernel poller missing"
+fi
+
+if command -v nfc-poll >/dev/null 2>&1; then
+    echo "nfc: external-reader libnfc tools installed"
+else
+    echo "nfc: external-reader libnfc tools missing"
+fi
+
+if pid_file_live /run/nq-nfc-jukebox.pid; then
+    echo "nfc-jukebox: running"
+else
+    echo "nfc-jukebox: not running"
+fi
 
 if grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null; then
     echo "input: Steelhead Front Panel present"
@@ -484,6 +580,8 @@ WPA_DEST="$CONFIG_DIR/wpa_supplicant.conf"
 AUTH_DEST="$CONFIG_DIR/authorized_keys"
 SQUEEZELITE_DEST="$CONFIG_DIR/squeezelite.env"
 LED_VISUALIZER_DEST="$CONFIG_DIR/led-visualizer.env"
+SOMAFM_DEST="$CONFIG_DIR/somafm.env"
+SOMAFM_TAGS_DEST="$CONFIG_DIR/somafm-tags.conf"
 RNG_DEST="$STATE_DIR/rng.seed"
 
 usage() {
@@ -497,15 +595,20 @@ Options:
   --authorized-keys PATH   Copy PATH to /etc/nexusq/authorized_keys
   --squeezelite PATH       Copy PATH to /etc/nexusq/squeezelite.env
   --led-visualizer PATH    Copy PATH to /etc/nexusq/led-visualizer.env
+  --somafm PATH            Copy PATH to /etc/nexusq/somafm.env
+  --somafm-tags PATH       Copy PATH to /etc/nexusq/somafm-tags.conf
   --rng-seed PATH          Copy PATH to /var/lib/nexusq/rng.seed
   --clear-wifi             Remove persistent Wi-Fi config
   --clear-authorized-keys  Remove persistent SSH authorized_keys
   --clear-squeezelite      Remove persistent Squeezelite config
   --clear-led-visualizer   Remove persistent LED visualizer config
+  --clear-somafm           Remove persistent SomaFM config
+  --clear-somafm-tags      Remove persistent NFC jukebox tag map
   --clear-rng-seed         Remove persistent RNG seed
   --cancel-autoreboot      Cancel the current safety return-to-fastboot timer
   --start-network          Start or restart Wi-Fi, DHCP, and Dropbear
   --start-squeezelite      Start or restart the Music Assistant player endpoint
+  --start-nfc-jukebox      Start or restart the NFC SomaFM jukebox
   --status                 Print appliance status after changes
   -h, --help               Show this help
 USAGE
@@ -536,15 +639,20 @@ wifi_src=
 auth_src=
 squeezelite_src=
 led_visualizer_src=
+somafm_src=
+somafm_tags_src=
 rng_src=
 clear_wifi=0
 clear_auth=0
 clear_squeezelite=0
 clear_led_visualizer=0
+clear_somafm=0
+clear_somafm_tags=0
 clear_rng=0
 cancel_autoreboot=0
 start_network=0
 start_squeezelite=0
+start_nfc_jukebox=0
 show_status=0
 
 while [ "$#" -gt 0 ]; do
@@ -569,6 +677,16 @@ while [ "$#" -gt 0 ]; do
             led_visualizer_src="$2"
             shift 2
             ;;
+        --somafm)
+            [ "$#" -ge 2 ] || die "--somafm requires a path"
+            somafm_src="$2"
+            shift 2
+            ;;
+        --somafm-tags)
+            [ "$#" -ge 2 ] || die "--somafm-tags requires a path"
+            somafm_tags_src="$2"
+            shift 2
+            ;;
         --rng-seed)
             [ "$#" -ge 2 ] || die "--rng-seed requires a path"
             rng_src="$2"
@@ -590,6 +708,14 @@ while [ "$#" -gt 0 ]; do
             clear_led_visualizer=1
             shift
             ;;
+        --clear-somafm)
+            clear_somafm=1
+            shift
+            ;;
+        --clear-somafm-tags)
+            clear_somafm_tags=1
+            shift
+            ;;
         --clear-rng-seed)
             clear_rng=1
             shift
@@ -604,6 +730,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --start-squeezelite)
             start_squeezelite=1
+            shift
+            ;;
+        --start-nfc-jukebox)
+            start_nfc_jukebox=1
             shift
             ;;
         --status)
@@ -627,12 +757,16 @@ chmod 700 "$CONFIG_DIR" "$STATE_DIR" 2>/dev/null || true
 [ "$clear_auth" -eq 0 ] || { rm -f "$AUTH_DEST"; echo "removed $AUTH_DEST"; }
 [ "$clear_squeezelite" -eq 0 ] || { rm -f "$SQUEEZELITE_DEST"; echo "removed $SQUEEZELITE_DEST"; }
 [ "$clear_led_visualizer" -eq 0 ] || { rm -f "$LED_VISUALIZER_DEST"; echo "removed $LED_VISUALIZER_DEST"; }
+[ "$clear_somafm" -eq 0 ] || { rm -f "$SOMAFM_DEST"; echo "removed $SOMAFM_DEST"; }
+[ "$clear_somafm_tags" -eq 0 ] || { rm -f "$SOMAFM_TAGS_DEST"; echo "removed $SOMAFM_TAGS_DEST"; }
 [ "$clear_rng" -eq 0 ] || { rm -f "$RNG_DEST"; echo "removed $RNG_DEST"; }
 
 [ -z "$wifi_src" ] || copy_secret "$wifi_src" "$WPA_DEST" 600
 [ -z "$auth_src" ] || copy_secret "$auth_src" "$AUTH_DEST" 600
 [ -z "$squeezelite_src" ] || copy_secret "$squeezelite_src" "$SQUEEZELITE_DEST" 644
 [ -z "$led_visualizer_src" ] || copy_secret "$led_visualizer_src" "$LED_VISUALIZER_DEST" 644
+[ -z "$somafm_src" ] || copy_secret "$somafm_src" "$SOMAFM_DEST" 644
+[ -z "$somafm_tags_src" ] || copy_secret "$somafm_tags_src" "$SOMAFM_TAGS_DEST" 644
 [ -z "$rng_src" ] || copy_secret "$rng_src" "$RNG_DEST" 600
 
 if [ "$cancel_autoreboot" -eq 1 ]; then
@@ -647,7 +781,11 @@ if [ "$start_squeezelite" -eq 1 ]; then
     /sbin/nq-start-squeezelite
 fi
 
-if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ] || [ "$start_squeezelite" -eq 1 ]; then
+if [ "$start_nfc_jukebox" -eq 1 ]; then
+    /sbin/nq-start-nfc-jukebox
+fi
+
+if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ] || [ "$start_squeezelite" -eq 1 ] || [ "$start_nfc_jukebox" -eq 1 ]; then
     /sbin/nq-appliance-status
 fi
 """,
@@ -1485,6 +1623,7 @@ export PATH
 
 LOG=/run/nexusq-adbd.log
 PID=/run/nq-adbd-lite.pid
+LOCK=/run/nq-adbd-lite.lock
 mkdir -p /run /run/nexusq
 : >"$LOG"
 exec >>"$LOG" 2>&1
@@ -1499,9 +1638,10 @@ for env in /etc/nexusq/adbd.env /run/nexusq/adbd.env /tmp/adbd.env; do
     . "$env"
 done
 
-: "${NQ_ADBD_ENABLE:=0}"
+: "${NQ_ADBD_ENABLE:=1}"
 : "${NQ_ADBD_PORT:=5555}"
 : "${NQ_ADBD_SHELL:=}"
+: "${NQ_ADBD_RESTART:=0}"
 export NQ_ADBD_SHELL
 
 pid_live() {
@@ -1522,8 +1662,44 @@ adbd_live() {
     return 1
 }
 
+port_listening() {
+    port_hex="$(printf '%04X' "$NQ_ADBD_PORT" 2>/dev/null || true)"
+    [ -n "$port_hex" ] || return 1
+    awk -v port=":$port_hex" '
+        $2 ~ port "$" && $4 == "0A" { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+
+acquire_lock() {
+    tries=0
+    while ! mkdir "$LOCK" 2>/dev/null; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 10 ]; then
+            echo "[nq-adbd-lite] another start is active"
+            exit 0
+        fi
+        sleep 1
+    done
+    trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
+}
+
+stop_adbd() {
+    live_pids=
+    for pid in $(pgrep -x nq-adbd-lite 2>/dev/null || pidof nq-adbd-lite 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
+    sleep 1
+    for pid in $live_pids; do
+        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+    rm -f "$PID"
+}
+
 if [ "$NQ_ADBD_ENABLE" != "1" ]; then
-    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1"
+    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1 to enable"
     exit 0
 fi
 
@@ -1532,26 +1708,43 @@ if [ ! -x /usr/sbin/nq-adbd-lite ]; then
     exit 0
 fi
 
+acquire_lock
+
+if [ "$NQ_ADBD_RESTART" = "1" ]; then
+    stop_adbd
+fi
+
 if [ -s "$PID" ]; then
     old_pid="$(cat "$PID" 2>/dev/null || true)"
-    if pid_live "$old_pid"; then
+    if pid_live "$old_pid" && port_listening; then
         echo "[nq-adbd-lite] already running pid=$old_pid"
         exit 0
     fi
 fi
-if adbd_live; then
+if adbd_live && port_listening; then
     echo "[nq-adbd-lite] already running"
     exit 0
 fi
-
-/usr/sbin/nq-adbd-lite "$NQ_ADBD_PORT" &
-echo "$!" >"$PID"
-sleep 1
-
-if pid_live "$(cat "$PID")"; then
-    echo "[nq-adbd-lite] pid=$(cat "$PID") port=$NQ_ADBD_PORT"
-    exit 0
+if adbd_live; then
+    echo "[nq-adbd-lite] stale process without listener; restarting"
+    stop_adbd
 fi
+
+attempt=1
+while [ "$attempt" -le 5 ]; do
+    /usr/sbin/nq-adbd-lite "$NQ_ADBD_PORT" &
+    echo "$!" >"$PID"
+    sleep 1
+
+    if pid_live "$(cat "$PID")" && port_listening; then
+        echo "[nq-adbd-lite] pid=$(cat "$PID") port=$NQ_ADBD_PORT"
+        exit 0
+    fi
+    echo "[nq-adbd-lite] start attempt $attempt failed"
+    pid_live "$(cat "$PID" 2>/dev/null || true)" && kill "$(cat "$PID")" 2>/dev/null || true
+    sleep 1
+    attempt=$((attempt + 1))
+done
 
 echo "[nq-adbd-lite] failed to stay running"
 exit 1
@@ -1590,16 +1783,28 @@ if ! command -v mpg123 >/dev/null 2>&1; then
     exit 1
 fi
 
-if command -v amixer >/dev/null 2>&1; then
-    speaker_volume="$NQ_PLAY_SPEAKER_VOLUME"
-    case "$speaker_volume" in
-        *,*) ;;
-        *) speaker_volume="$speaker_volume,$speaker_volume" ;;
+preserve_value() {
+    case "${1:-}" in
+        ""|preserve|keep|current|none) return 0 ;;
     esac
+    return 1
+}
 
-    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Switch" "$NQ_PLAY_SPEAKER_SWITCH" || true
-    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Volume" "$speaker_volume" || true
-    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Master Volume" "$NQ_PLAY_MASTER_VOLUME" || true
+if command -v amixer >/dev/null 2>&1; then
+    preserve_value "$NQ_PLAY_SPEAKER_SWITCH" || \\
+        amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Switch" "$NQ_PLAY_SPEAKER_SWITCH" || true
+
+    if ! preserve_value "$NQ_PLAY_SPEAKER_VOLUME"; then
+        speaker_volume="$NQ_PLAY_SPEAKER_VOLUME"
+        case "$speaker_volume" in
+            *,*) ;;
+            *) speaker_volume="$speaker_volume,$speaker_volume" ;;
+        esac
+        amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Volume" "$speaker_volume" || true
+    fi
+
+    preserve_value "$NQ_PLAY_MASTER_VOLUME" || \\
+        amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Master Volume" "$NQ_PLAY_MASTER_VOLUME" || true
 fi
 
 exec mpg123 \\
@@ -1613,6 +1818,1091 @@ exec mpg123 \\
     --buffer "$NQ_PLAY_BUFFER" \\
     --preload "$NQ_PLAY_PRELOAD" \\
     "$@"
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr/bin/nq-somafm-stations",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+usage() {
+    cat <<'EOF'
+usage:
+  nq-somafm-stations
+  nq-somafm-stations --help
+
+List current SomaFM station ids and names.
+
+Environment:
+  NQ_SOMAFM_CHANNELS_URL      Channel feed URL
+  NQ_SOMAFM_CONNECT_TIMEOUT   curl connect timeout seconds
+  NQ_SOMAFM_MAX_TIME          curl max time seconds
+EOF
+}
+
+case "${1:-}" in
+    "")
+        ;;
+    -h|--help)
+        [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+        usage
+        exit 0
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_SOMAFM_CHANNELS_URL:=http://somafm.com/channels.xml}"
+: "${NQ_SOMAFM_CONNECT_TIMEOUT:=10}"
+: "${NQ_SOMAFM_MAX_TIME:=20}"
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo "nq-somafm-stations: curl is not installed" >&2
+    exit 1
+fi
+
+data="$(curl -fsSL --connect-timeout "$NQ_SOMAFM_CONNECT_TIMEOUT" --max-time "$NQ_SOMAFM_MAX_TIME" "$NQ_SOMAFM_CHANNELS_URL")" || {
+    echo "nq-somafm-stations: failed to fetch $NQ_SOMAFM_CHANNELS_URL" >&2
+    exit 1
+}
+
+printf '%s\\n' "$data" | awk '
+    function trim(text) {
+        sub(/^[[:space:]]*/, "", text)
+        sub(/[[:space:]]*$/, "", text)
+        return text
+    }
+    /<channel id="/ {
+        id = $0
+        sub(/^.*<channel id="/, "", id)
+        sub(/".*$/, "", id)
+        next
+    }
+    /<title>/ && id != "" {
+        title = $0
+        sub(/^.*<title><!\\[CDATA\\[/, "", title)
+        sub(/\\]\\]><\\/title>.*$/, "", title)
+        sub(/^.*<title>/, "", title)
+        sub(/<\\/title>.*$/, "", title)
+        printf "%-18s %s\\n", id, trim(title)
+        id = ""
+    }
+'
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr/bin/nq-somafm-url",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+usage() {
+    cat <<'EOF'
+usage:
+  nq-somafm-url STATION_ID_OR_URL
+  nq-somafm-url --help
+
+Resolve a SomaFM station id, somafm: URI, playlist URL, or direct stream URL
+to the first playable stream URL.
+
+Examples:
+  nq-somafm-url groovesalad
+  nq-somafm-url somafm:dronezone
+  nq-somafm-url http://somafm.com/m3u/secretagent.m3u
+
+Use nq-somafm-play --list to show current station ids.
+EOF
+}
+
+case "${1:-}" in
+    -h|--help)
+        [ "$#" -eq 1 ] || { usage >&2; exit 2; }
+        usage
+        exit 0
+        ;;
+esac
+
+if [ "$#" -ne 1 ]; then
+    usage >&2
+    exit 2
+fi
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_SOMAFM_PLAYLIST_PREFIX:=http://somafm.com/m3u/}"
+: "${NQ_SOMAFM_PLAYLIST_SUFFIX:=.m3u}"
+: "${NQ_SOMAFM_CONNECT_TIMEOUT:=10}"
+: "${NQ_SOMAFM_MAX_TIME:=20}"
+
+target="$1"
+case "$target" in
+    somafm:*)
+        target="${target#somafm:}"
+        ;;
+esac
+
+case "$target" in
+    http://*|https://*)
+        case "$target" in
+            *.pls|*.m3u|*/m3u/*) playlist="$target" ;;
+            *) printf '%s\\n' "$target"; exit 0 ;;
+        esac
+        ;;
+    *[!A-Za-z0-9_-]*|"")
+        echo "nq-somafm-url: invalid station id: $target" >&2
+        exit 2
+        ;;
+    *)
+        playlist="${NQ_SOMAFM_PLAYLIST_PREFIX}${target}${NQ_SOMAFM_PLAYLIST_SUFFIX}"
+        ;;
+esac
+
+if ! command -v curl >/dev/null 2>&1; then
+    echo "nq-somafm-url: curl is not installed" >&2
+    exit 1
+fi
+
+data="$(curl -fsSL --connect-timeout "$NQ_SOMAFM_CONNECT_TIMEOUT" --max-time "$NQ_SOMAFM_MAX_TIME" "$playlist")" || {
+    echo "nq-somafm-url: failed to fetch $playlist" >&2
+    exit 1
+}
+
+url="$(printf '%s\\n' "$data" | awk '
+    /^[[:space:]]*#/ { next }
+    tolower($0) ~ /^file[0-9]*=/ {
+        sub(/^[^=]*=/, "")
+        print
+        exit
+    }
+    /^https?:\\/\\// {
+        print
+        exit
+    }
+')"
+
+case "$url" in
+    http://*|https://*) printf '%s\\n' "$url" ;;
+    *)
+        echo "nq-somafm-url: no stream URL found in $playlist" >&2
+        exit 1
+        ;;
+esac
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr/bin/nq-somafm-play",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-somafm.log
+PID=/run/nq-somafm.pid
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_SOMAFM_STOP_SQUEEZELITE:=1}"
+: "${NQ_SOMAFM_MIXER_CARD:=0}"
+: "${NQ_SOMAFM_MASTER_VOLUME:=preserve}"
+: "${NQ_SOMAFM_SPEAKER_VOLUME:=preserve}"
+: "${NQ_SOMAFM_SPEAKER_SWITCH:=on}"
+: "${NQ_SOMAFM_OUTPUT:=hw:0,0}"
+: "${NQ_SOMAFM_RATE:=48000}"
+: "${NQ_SOMAFM_ENCODING:=s16}"
+: "${NQ_SOMAFM_DEVBUFFER:=0.5}"
+: "${NQ_SOMAFM_BUFFER:=1024}"
+: "${NQ_SOMAFM_PRELOAD:=1}"
+: "${NQ_SOMAFM_RESTART:=1}"
+: "${NQ_SOMAFM_RESTART_DELAY:=3}"
+
+usage() {
+    cat <<'EOF'
+usage:
+  nq-somafm-play STATION_ID_OR_URL
+  nq-somafm-play --list
+  nq-somafm-play --stop
+  nq-somafm-play --help
+
+Play a SomaFM station id, somafm: URI, playlist URL, or direct stream URL.
+
+Examples:
+  nq-somafm-play groovesalad
+  nq-somafm-play dronezone
+  nq-somafm-play somafm:secretagent
+
+Commands:
+  --list   List current SomaFM station ids and names.
+  --stop   Stop local SomaFM playback.
+
+Logs:
+  /run/nexusq-somafm.log
+EOF
+}
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stop_pid_file() {
+    pid_file="$1"
+    [ -s "$pid_file" ] || return 0
+    old_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if pid_live "$old_pid"; then
+        kill "$old_pid" 2>/dev/null || true
+        sleep 1
+        pid_live "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
+    fi
+    rm -f "$pid_file"
+}
+
+stop_proc_name() {
+    name="$1"
+    live_pids=
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
+    sleep 1
+    for pid in $live_pids; do
+        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+}
+
+stop_players() {
+    stop_pid_file "$PID"
+    stop_proc_name mpg123
+    if [ "$NQ_SOMAFM_STOP_SQUEEZELITE" = "1" ]; then
+        stop_proc_name squeezelite
+        rm -f /run/nq-squeezelite.pid
+    fi
+}
+
+if [ "$#" -ne 1 ]; then
+    usage >&2
+    exit 2
+fi
+
+case "${1:-}" in
+    --list)
+        exec /usr/bin/nq-somafm-stations
+        ;;
+    --stop)
+        stop_players
+        exit 0
+        ;;
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    --*)
+        echo "nq-somafm-play: unknown option: $1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
+station="$1"
+echo "nq-somafm: resolving $station" >&2
+url="$(/usr/bin/nq-somafm-url "$station")" || exit 1
+
+mkdir -p /run /run/nexusq
+stop_players
+: >"$LOG"
+{
+    echo "[nq-somafm] station=$station"
+    echo "[nq-somafm] url=$url"
+    date 2>/dev/null || true
+} >>"$LOG"
+
+(
+    trap '' HUP
+    export NQ_PLAY_MIXER_CARD="$NQ_SOMAFM_MIXER_CARD"
+    export NQ_PLAY_MASTER_VOLUME="$NQ_SOMAFM_MASTER_VOLUME"
+    export NQ_PLAY_SPEAKER_VOLUME="$NQ_SOMAFM_SPEAKER_VOLUME"
+    export NQ_PLAY_SPEAKER_SWITCH="$NQ_SOMAFM_SPEAKER_SWITCH"
+    export NQ_PLAY_OUTPUT="$NQ_SOMAFM_OUTPUT"
+    export NQ_PLAY_RATE="$NQ_SOMAFM_RATE"
+    export NQ_PLAY_ENCODING="$NQ_SOMAFM_ENCODING"
+    export NQ_PLAY_DEVBUFFER="$NQ_SOMAFM_DEVBUFFER"
+    export NQ_PLAY_BUFFER="$NQ_SOMAFM_BUFFER"
+    export NQ_PLAY_PRELOAD="$NQ_SOMAFM_PRELOAD"
+    if [ "$NQ_SOMAFM_RESTART" != "1" ]; then
+        exec /usr/bin/nq-play "$url"
+    fi
+    while :; do
+        /usr/bin/nq-play "$url"
+        rc="$?"
+        echo "[nq-somafm] player exited rc=$rc; restarting in ${NQ_SOMAFM_RESTART_DELAY}s"
+        sleep "$NQ_SOMAFM_RESTART_DELAY"
+    done
+) </dev/null >>"$LOG" 2>&1 &
+echo "$!" >"$PID"
+echo "nq-somafm: starting $station pid=$(cat "$PID" 2>/dev/null || true)" >&2
+sleep 1
+
+if pid_live "$(cat "$PID" 2>/dev/null || true)"; then
+    echo "nq-somafm: playing $station pid=$(cat "$PID")"
+    exit 0
+fi
+
+echo "nq-somafm: player failed to stay running; see $LOG" >&2
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr/bin/nq-nfc-scan",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+uid_only=0
+backend="${NQ_NFC_SCAN_BACKEND:-auto}"
+timeout="${NQ_NFC_SCAN_TIMEOUT:-15}"
+
+start_pcscd() {
+    command -v pcscd >/dev/null 2>&1 || return 0
+    if pgrep -x pcscd >/dev/null 2>&1 || pidof pcscd >/dev/null 2>&1; then
+        return 0
+    fi
+    pcscd >/dev/null 2>&1 || true
+    sleep 1
+}
+
+load_kernel_nfc() {
+    command -v modprobe >/dev/null 2>&1 || return 0
+    ls /sys/class/nfc/nfc* >/dev/null 2>&1 && return 0
+
+    if ! modprobe pn544_i2c 2>/dev/null; then
+        krel="$(uname -r 2>/dev/null || true)"
+        if [ -n "$krel" ] && command -v depmod >/dev/null 2>&1; then
+            depmod -a "$krel" 2>/dev/null || true
+            modprobe pn544_i2c 2>/dev/null && {
+                sleep 1
+                return 0
+            }
+        fi
+        if [ -n "$krel" ] && command -v insmod >/dev/null 2>&1; then
+            mods="/lib/modules/$krel/kernel"
+            for ko in \
+                "$mods/net/nfc/nfc.ko" \
+                "$mods/net/nfc/hci/hci.ko" \
+                "$mods/drivers/nfc/pn544/pn544.ko" \
+                "$mods/drivers/nfc/pn544/pn544_i2c.ko"; do
+                [ -r "$ko" ] || continue
+                insmod "$ko" 2>/dev/null || true
+            done
+        fi
+    fi
+    sleep 1
+}
+
+parse_uid() {
+    awk '
+        /^nq-nfc-poll: uid=/ {
+            sub(/^nq-nfc-poll: uid=/, "")
+            gsub(/[^0-9A-Fa-f]/, "")
+            print tolower($0)
+            exit
+        }
+        /^nq-nfc-poll: iso15693_uid=/ {
+            sub(/^nq-nfc-poll: iso15693_uid=/, "")
+            gsub(/[^0-9A-Fa-f]/, "")
+            print tolower($0)
+            exit
+        }
+        /UID \\(NFCID1\\):/ {
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
+                    printf "%s", tolower($i)
+                }
+            }
+            printf "\\n"
+            exit
+        }
+    '
+}
+
+kernel_available() {
+    command -v nq-nfc-poll >/dev/null 2>&1 || return 1
+    load_kernel_nfc
+    ls /sys/class/nfc/nfc* >/dev/null 2>&1
+}
+
+scan_kernel() {
+    out="$(nq-nfc-poll --timeout "$timeout" 2>&1)"
+    rc="$?"
+    [ "$uid_only" = "1" ] || printf '%s\\n' "$out"
+    uid="$(printf '%s\\n' "$out" | parse_uid)"
+    if [ -n "$uid" ]; then
+        if [ "$uid_only" = "1" ]; then
+            printf '%s\\n' "$uid"
+        else
+            echo "nq-nfc-scan: uid=$uid"
+        fi
+        exit 0
+    fi
+    return "$rc"
+}
+
+scan_libnfc() {
+    if ! command -v nfc-poll >/dev/null 2>&1; then
+        echo "nq-nfc-scan: nfc-poll is not installed" >&2
+        return 1
+    fi
+
+    start_pcscd
+    out="$(nfc-poll 2>&1)"
+    rc="$?"
+    [ "$uid_only" = "1" ] || printf '%s\\n' "$out"
+    uid="$(printf '%s\\n' "$out" | parse_uid)"
+    if [ -n "$uid" ]; then
+        if [ "$uid_only" = "1" ]; then
+            printf '%s\\n' "$uid"
+        else
+            echo "nq-nfc-scan: uid=$uid"
+        fi
+        exit 0
+    fi
+    return "$rc"
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --uid-only)
+            uid_only=1
+            shift
+            ;;
+        --backend)
+            [ "$#" -ge 2 ] || {
+                echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+                exit 2
+            }
+            backend="$2"
+            shift 2
+            ;;
+        --timeout)
+            [ "$#" -ge 2 ] || {
+                echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+                exit 2
+            }
+            timeout="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]"
+            exit 0
+            ;;
+        *)
+            echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+case "$backend" in
+    auto)
+        if kernel_available; then
+            scan_kernel
+            rc="$?"
+        else
+            scan_libnfc
+            rc="$?"
+        fi
+        ;;
+    kernel)
+        if ! kernel_available; then
+            echo "nq-nfc-scan: kernel NFC device or nq-nfc-poll is missing" >&2
+            exit 1
+        fi
+        scan_kernel
+        rc="$?"
+        ;;
+    libnfc)
+        scan_libnfc
+        rc="$?"
+        ;;
+    *)
+        echo "nq-nfc-scan: invalid backend: $backend" >&2
+        exit 2
+        ;;
+esac
+
+echo "nq-nfc-scan: no ISO14443A UID found" >&2
+exit "$rc"
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr/bin/nq-nfc-map",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_NFC_TAGS:=/etc/nexusq/somafm-tags.conf}"
+: "${NQ_NFC_SCAN_BACKEND:=auto}"
+: "${NQ_NFC_MAP_TIMEOUT:=20}"
+: "${NQ_NFC_MAP_VALIDATE:=1}"
+: "${NQ_NFC_MAP_RESTART:=auto}"
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  nq-nfc-map STATION_ID_OR_URL
+  nq-nfc-map --uid UID STATION_ID_OR_URL
+  nq-nfc-map --list
+
+Scan one NFC card/tag and persist its UID mapping to a SomaFM station.
+
+Options:
+  --uid UID             Use a known UID instead of scanning a card.
+  --tags PATH           Tag map path. Default: /etc/nexusq/somafm-tags.conf
+  --backend NAME        Scanner backend: auto, kernel, or libnfc.
+  --timeout SECONDS     Scan timeout. Default: 20.
+  --restart             Restart the jukebox after writing the map.
+  --no-restart          Do not restart the jukebox after writing the map.
+  --validate            Resolve the SomaFM station before writing. Default.
+  --no-validate         Skip station resolution.
+  --list                Print the current UID-to-station map.
+  -h, --help            Show this help.
+
+Examples:
+  nq-somafm-play --list
+  nq-nfc-map groovesalad
+  nq-nfc-map dronezone
+  nq-nfc-map --uid 04:11:22:33:44:55:66 secretagent
+USAGE
+}
+
+die() {
+    echo "nq-nfc-map: $*" >&2
+    exit 1
+}
+
+normalize_uid() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ':-'
+}
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stop_jukebox() {
+    [ -s /run/nq-nfc-jukebox.pid ] || return 1
+    old_pid="$(cat /run/nq-nfc-jukebox.pid 2>/dev/null || true)"
+    pid_live "$old_pid" || return 1
+    kill -TERM "-$old_pid" 2>/dev/null || true
+    kill "$old_pid" 2>/dev/null || true
+    sleep 1
+    pid_live "$old_pid" && kill -KILL "-$old_pid" 2>/dev/null || true
+    pid_live "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
+    rm -f /run/nq-nfc-jukebox.pid
+    return 0
+}
+
+start_jukebox() {
+    NQ_NFC_JUKEBOX_RESTART=1 /sbin/nq-start-nfc-jukebox >/dev/null 2>&1 || \\
+        echo "nq-nfc-map: warning: failed to restart NFC jukebox" >&2
+}
+
+restart_on_exit=0
+cleanup_jukebox() {
+    [ "$restart_on_exit" = "1" ] || return 0
+    restart_on_exit=0
+    start_jukebox
+}
+
+list_map() {
+    if [ ! -r "$NQ_NFC_TAGS" ]; then
+        echo "nq-nfc-map: no tag map at $NQ_NFC_TAGS" >&2
+        exit 1
+    fi
+    awk '
+        BEGIN { FS = "[ \\t]+"; printf "%-18s %s\\n", "UID", "STATION" }
+        /^[ \\t]*(#|$)/ { next }
+        {
+            uid = tolower($1)
+            gsub(/[:-]/, "", uid)
+            printf "%-18s %s\\n", uid, $2
+        }
+    ' "$NQ_NFC_TAGS"
+}
+
+uid=
+list=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --uid)
+            [ "$#" -ge 2 ] || die "--uid requires a UID"
+            uid="$2"
+            shift 2
+            ;;
+        --tags)
+            [ "$#" -ge 2 ] || die "--tags requires a path"
+            NQ_NFC_TAGS="$2"
+            shift 2
+            ;;
+        --backend)
+            [ "$#" -ge 2 ] || die "--backend requires auto, kernel, or libnfc"
+            NQ_NFC_SCAN_BACKEND="$2"
+            shift 2
+            ;;
+        --timeout)
+            [ "$#" -ge 2 ] || die "--timeout requires seconds"
+            NQ_NFC_MAP_TIMEOUT="$2"
+            shift 2
+            ;;
+        --restart)
+            NQ_NFC_MAP_RESTART=1
+            shift
+            ;;
+        --no-restart)
+            NQ_NFC_MAP_RESTART=0
+            shift
+            ;;
+        --validate)
+            NQ_NFC_MAP_VALIDATE=1
+            shift
+            ;;
+        --no-validate)
+            NQ_NFC_MAP_VALIDATE=0
+            shift
+            ;;
+        --list)
+            list=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            die "unknown option: $1"
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+if [ "$list" -eq 1 ]; then
+    list_map
+    exit 0
+fi
+[ "$#" -eq 1 ] || { usage >&2; exit 2; }
+
+station="$1"
+case "$station" in
+    ""|*[![:graph:]]*) die "station must be one non-empty word" ;;
+esac
+
+case "$NQ_NFC_SCAN_BACKEND" in
+    auto|kernel|libnfc) ;;
+    *) die "invalid backend: $NQ_NFC_SCAN_BACKEND" ;;
+esac
+
+if [ "$NQ_NFC_MAP_VALIDATE" = "1" ] && command -v nq-somafm-url >/dev/null 2>&1; then
+    nq-somafm-url "$station" >/dev/null || \\
+        die "station did not resolve: $station; use --no-validate to write anyway"
+fi
+
+jukebox_was_running=0
+
+if [ -z "$uid" ]; then
+    command -v nq-nfc-scan >/dev/null 2>&1 || die "nq-nfc-scan is not installed"
+    if [ -s /run/nq-nfc-jukebox.pid ]; then
+        old_pid="$(cat /run/nq-nfc-jukebox.pid 2>/dev/null || true)"
+        pid_live "$old_pid" && jukebox_was_running=1
+    fi
+    if [ "$jukebox_was_running" -eq 1 ] && [ "$NQ_NFC_MAP_RESTART" != "0" ]; then
+        restart_on_exit=1
+        trap cleanup_jukebox EXIT INT TERM
+    fi
+    stop_jukebox >/dev/null 2>&1 || true
+    echo "nq-nfc-map: tap the card for $station" >&2
+    uid="$(nq-nfc-scan --uid-only --backend "$NQ_NFC_SCAN_BACKEND" --timeout "$NQ_NFC_MAP_TIMEOUT" 2>/dev/null | awk '/^[0-9a-f]+$/ { print; exit }')"
+fi
+
+uid="$(normalize_uid "$uid")"
+case "$uid" in
+    ""|*[!0-9a-f]*) die "invalid UID: $uid" ;;
+esac
+
+mkdir -p "$(dirname "$NQ_NFC_TAGS")" || die "cannot create $(dirname "$NQ_NFC_TAGS")"
+tmp="${NQ_NFC_TAGS}.tmp.$$"
+if [ -r "$NQ_NFC_TAGS" ]; then
+    awk -v target="$uid" '
+        BEGIN { FS = "[ \\t]+" }
+        /^[ \\t]*(#|$)/ { print; next }
+        {
+            key = tolower($1)
+            gsub(/[:-]/, "", key)
+            if (key != target) print
+        }
+    ' "$NQ_NFC_TAGS" >"$tmp" || die "failed to rewrite $NQ_NFC_TAGS"
+else
+    {
+        echo "# UID              SomaFM station id"
+    } >"$tmp" || die "failed to create $NQ_NFC_TAGS"
+fi
+printf '%-18s %s\\n' "$uid" "$station" >>"$tmp" || die "failed to append mapping"
+chmod 644 "$tmp" 2>/dev/null || true
+chown 0:0 "$tmp" 2>/dev/null || true
+mv "$tmp" "$NQ_NFC_TAGS" || die "failed to install $NQ_NFC_TAGS"
+
+echo "nq-nfc-map: mapped $uid -> $station in $NQ_NFC_TAGS"
+
+case "$NQ_NFC_MAP_RESTART" in
+    1)
+        restart_on_exit=0
+        trap - EXIT INT TERM
+        start_jukebox
+        ;;
+    auto)
+        if [ "$jukebox_was_running" -ne 0 ]; then
+            restart_on_exit=0
+            trap - EXIT INT TERM
+            start_jukebox
+        fi
+        ;;
+esac
+""",
+        0o755,
+    )
+    write_binary(rootfs / "usr/share/nexusq/nfc-ack.wav", make_tone_wav(), 0o644)
+    write_text(
+        rootfs / "usr/bin/nq-nfc-ack",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_NFC_ACK_ENABLE:=1}"
+: "${NQ_NFC_ACK_WAV:=/usr/share/nexusq/nfc-ack.wav}"
+: "${NQ_NFC_ACK_MIXER_CARD:=0}"
+: "${NQ_NFC_ACK_SPEAKER_SWITCH:=on}"
+: "${NQ_NFC_ACK_OUTPUT:=hw:0,0}"
+: "${NQ_NFC_ACK_TIMEOUT:=1}"
+: "${NQ_NFC_ACK_STOP_PLAYER:=1}"
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stop_pid_file() {
+    pid_file="$1"
+    [ -s "$pid_file" ] || return 0
+    old_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    [ -z "$old_pid" ] || kill "$old_pid" 2>/dev/null || true
+    rm -f "$pid_file"
+}
+
+stop_proc_name() {
+    name="$1"
+    live_pids=
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        still_live=
+        for pid in $live_pids; do
+            pid_live "$pid" && still_live=1
+        done
+        [ -n "$still_live" ] || break
+        sleep 0.05 2>/dev/null || sleep 1
+    done
+    for pid in $live_pids; do
+        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+}
+
+[ "$NQ_NFC_ACK_ENABLE" = "1" ] || exit 0
+command -v aplay >/dev/null 2>&1 || exit 0
+[ -r "$NQ_NFC_ACK_WAV" ] || exit 0
+
+if [ "$NQ_NFC_ACK_STOP_PLAYER" = "1" ]; then
+    stop_pid_file /run/nq-somafm.pid
+    stop_proc_name mpg123
+fi
+
+if command -v amixer >/dev/null 2>&1 && [ -n "$NQ_NFC_ACK_SPEAKER_SWITCH" ]; then
+    amixer -q -c "$NQ_NFC_ACK_MIXER_CARD" cset name="Speaker Switch" "$NQ_NFC_ACK_SPEAKER_SWITCH" || true
+fi
+
+if command -v timeout >/dev/null 2>&1; then
+    timeout "$NQ_NFC_ACK_TIMEOUT" aplay -D "$NQ_NFC_ACK_OUTPUT" -q "$NQ_NFC_ACK_WAV" || true
+else
+    aplay -D "$NQ_NFC_ACK_OUTPUT" -q "$NQ_NFC_ACK_WAV" || true
+fi
+exit 0
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr/sbin/nq-nfc-jukebox",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_NFC_JUKEBOX_ENABLE:=0}"
+: "${NQ_NFC_TAGS:=/etc/nexusq/somafm-tags.conf}"
+: "${NQ_NFC_UNKNOWN_LOG:=/run/nexusq-nfc-unknown-tags.log}"
+: "${NQ_NFC_COOLDOWN_SECONDS:=5}"
+: "${NQ_NFC_IDLE_SLEEP:=0}"
+: "${NQ_NFC_SCAN_BACKEND:=auto}"
+: "${NQ_NFC_SCAN_TIMEOUT:=1}"
+: "${NQ_NFC_DEBUG:=0}"
+: "${NQ_NFC_ACK_ENABLE:=1}"
+
+log() {
+    echo "[nq-nfc-jukebox] $*"
+}
+
+pid_now() {
+    date +%s 2>/dev/null || echo 0
+}
+
+station_for_uid() {
+    uid="$1"
+    [ -r "$NQ_NFC_TAGS" ] || return 1
+    awk -v target="$uid" '
+        BEGIN { FS = "[ \\t]+" }
+        /^[ \\t]*(#|$)/ { next }
+        {
+            key = tolower($1)
+            gsub(/[:-]/, "", key)
+            if (key == target) {
+                print $2
+                exit
+            }
+        }
+    ' "$NQ_NFC_TAGS"
+}
+
+if [ "$NQ_NFC_JUKEBOX_ENABLE" != "1" ]; then
+    log "disabled; set NQ_NFC_JUKEBOX_ENABLE=1"
+    exit 0
+fi
+
+if ! command -v nq-nfc-scan >/dev/null 2>&1; then
+    log "nq-nfc-scan is not installed"
+    exit 1
+fi
+
+log "watching for NFC tags"
+[ -r "$NQ_NFC_TAGS" ] || log "tag map missing: $NQ_NFC_TAGS"
+
+last_uid=
+last_time=0
+
+while true; do
+    out="$(nq-nfc-scan --uid-only --backend "$NQ_NFC_SCAN_BACKEND" --timeout "$NQ_NFC_SCAN_TIMEOUT" 2>&1)"
+    rc="$?"
+    [ "$NQ_NFC_DEBUG" = "1" ] && printf '%s\\n' "$out"
+    uid="$(printf '%s\\n' "$out" | awk '/^[0-9a-f]+$/ { print; exit }')"
+    now="$(pid_now)"
+
+    if [ -z "$uid" ]; then
+        case "$rc" in
+            0|1|16|62) ;;
+            *) log "poll exited rc=$rc" ;;
+        esac
+        last_uid=
+        sleep "$NQ_NFC_IDLE_SLEEP"
+        continue
+    fi
+
+    if [ "$uid" = "$last_uid" ] && [ "$now" -gt 0 ] 2>/dev/null && [ "$last_time" -gt 0 ] 2>/dev/null; then
+        delta=$((now - last_time))
+        if [ "$delta" -lt "$NQ_NFC_COOLDOWN_SECONDS" ] 2>/dev/null; then
+            log "ignored repeat tag uid=$uid"
+            sleep "$NQ_NFC_IDLE_SLEEP"
+            continue
+        fi
+    fi
+
+    station="$(station_for_uid "$uid" | head -n 1)"
+    if [ -z "$station" ]; then
+        log "unknown tag uid=$uid"
+        printf '%s\\n' "$uid" >>"$NQ_NFC_UNKNOWN_LOG" 2>/dev/null || true
+        last_uid="$uid"
+        last_time="$now"
+        sleep "$NQ_NFC_IDLE_SLEEP"
+        continue
+    fi
+
+    log "tag uid=$uid station=$station"
+    if [ "$NQ_NFC_ACK_ENABLE" = "1" ] && command -v nq-nfc-ack >/dev/null 2>&1; then
+        nq-nfc-ack || log "ack failed"
+    fi
+    /usr/bin/nq-somafm-play "$station" || log "play failed for station=$station"
+    last_uid="$uid"
+    last_time="$now"
+    sleep "$NQ_NFC_IDLE_SLEEP"
+done
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-start-nfc-jukebox",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-nfc-jukebox.log
+PID=/run/nq-nfc-jukebox.pid
+mkdir -p /run /run/nexusq
+: >"$LOG"
+exec >>"$LOG" 2>&1
+trap '' HUP
+
+echo "[nq-nfc-jukebox] starting"
+date 2>/dev/null || true
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_NFC_JUKEBOX_ENABLE:=0}"
+: "${NQ_NFC_JUKEBOX_RESTART:=0}"
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stop_old() {
+    [ -s "$PID" ] || return 0
+    old_pid="$(cat "$PID" 2>/dev/null || true)"
+    if pid_live "$old_pid"; then
+        kill -TERM "-$old_pid" 2>/dev/null || true
+        kill "$old_pid" 2>/dev/null || true
+        sleep 1
+        pid_live "$old_pid" && kill -KILL "-$old_pid" 2>/dev/null || true
+        pid_live "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
+    fi
+    rm -f "$PID"
+}
+
+if [ "$NQ_NFC_JUKEBOX_ENABLE" != "1" ]; then
+    echo "[nq-nfc-jukebox] disabled; set NQ_NFC_JUKEBOX_ENABLE=1"
+    exit 0
+fi
+
+if [ "$NQ_NFC_JUKEBOX_RESTART" != "1" ]; then
+    if [ -s "$PID" ]; then
+        old_pid="$(cat "$PID" 2>/dev/null || true)"
+        if pid_live "$old_pid"; then
+            echo "[nq-nfc-jukebox] already running pid=$old_pid"
+            exit 0
+        fi
+    fi
+else
+    stop_old
+fi
+
+if ! command -v nq-nfc-scan >/dev/null 2>&1; then
+    echo "[nq-nfc-jukebox] nq-nfc-scan command missing"
+    exit 1
+fi
+
+run_loop='
+trap "" HUP
+while true; do
+    /usr/sbin/nq-nfc-jukebox
+    rc="$?"
+    echo "[nq-nfc-jukebox] exited rc=$rc; restarting"
+    sleep 2
+done
+'
+if command -v setsid >/dev/null 2>&1; then
+    setsid sh -c "$run_loop" </dev/null &
+else
+    sh -c "$run_loop" </dev/null &
+fi
+echo "$!" >"$PID"
+sleep 1
+
+if pid_live "$(cat "$PID" 2>/dev/null || true)"; then
+    echo "[nq-nfc-jukebox] pid=$(cat "$PID")"
+    exit 0
+fi
+
+echo "[nq-nfc-jukebox] failed to stay running"
+exit 1
 """,
         0o755,
     )
@@ -1631,6 +2921,27 @@ else
     echo "squeezelite: missing"
 fi
 
+if ls /sys/class/nfc/nfc* >/dev/null 2>&1; then
+    for dev in /sys/class/nfc/nfc*; do
+        [ -e "$dev" ] || continue
+        echo "nfc: kernel device $(basename "$dev") present"
+    done
+else
+    echo "nfc: kernel device missing"
+fi
+
+if command -v nq-nfc-poll >/dev/null 2>&1; then
+    echo "nfc: kernel poller installed"
+else
+    echo "nfc: kernel poller missing"
+fi
+
+if command -v nfc-poll >/dev/null 2>&1; then
+    echo "nfc: external-reader libnfc tools installed"
+else
+    echo "nfc: external-reader libnfc tools missing"
+fi
+
 if [ -s /etc/nexusq/squeezelite.env ]; then
     echo "config: /etc/nexusq/squeezelite.env present"
 else
@@ -1640,6 +2951,16 @@ if [ -s /etc/nexusq/led-visualizer.env ]; then
     echo "config: /etc/nexusq/led-visualizer.env present"
 else
     echo "config: /etc/nexusq/led-visualizer.env missing"
+fi
+if [ -s /etc/nexusq/somafm.env ]; then
+    echo "config: /etc/nexusq/somafm.env present"
+else
+    echo "config: /etc/nexusq/somafm.env missing"
+fi
+if [ -s /etc/nexusq/somafm-tags.conf ]; then
+    echo "config: /etc/nexusq/somafm-tags.conf present"
+else
+    echo "config: /etc/nexusq/somafm-tags.conf missing"
 fi
 
 proc_name_live() {
@@ -1653,11 +2974,40 @@ proc_name_live() {
     return 1
 }
 
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+pid_file_live() {
+    pid_file="$1"
+    [ -s "$pid_file" ] || return 1
+    pid_live "$(cat "$pid_file" 2>/dev/null || true)"
+}
+
 if proc_name_live squeezelite; then
     echo "squeezelite: running"
     ps | grep '[s]queezelite' 2>/dev/null || true
 else
     echo "squeezelite: not running"
+fi
+
+if proc_name_live mpg123; then
+    echo "somafm: mpg123 running"
+    ps | grep '[m]pg123' 2>/dev/null || true
+else
+    echo "somafm: mpg123 not running"
+fi
+
+if pid_file_live /run/nq-nfc-jukebox.pid; then
+    echo "nfc-jukebox: running"
+    ps | grep '[n]q-nfc-jukebox' 2>/dev/null || true
+else
+    echo "nfc-jukebox: not running"
 fi
 
 if grep -q 'Steelhead Front Panel' /proc/bus/input/devices 2>/dev/null; then
@@ -1695,6 +3045,21 @@ if [ -s /run/nexusq-squeezelite.log ]; then
     tail -n 80 /run/nexusq-squeezelite.log 2>/dev/null || cat /run/nexusq-squeezelite.log
 fi
 
+if [ -s /run/nexusq-somafm.log ]; then
+    echo "--- /run/nexusq-somafm.log ---"
+    tail -n 80 /run/nexusq-somafm.log 2>/dev/null || cat /run/nexusq-somafm.log
+fi
+
+if [ -s /run/nexusq-nfc-jukebox.log ]; then
+    echo "--- /run/nexusq-nfc-jukebox.log ---"
+    tail -n 80 /run/nexusq-nfc-jukebox.log 2>/dev/null || cat /run/nexusq-nfc-jukebox.log
+fi
+
+if [ -s /run/nexusq-nfc-unknown-tags.log ]; then
+    echo "--- /run/nexusq-nfc-unknown-tags.log ---"
+    tail -n 40 /run/nexusq-nfc-unknown-tags.log 2>/dev/null || cat /run/nexusq-nfc-unknown-tags.log
+fi
+
 if [ -s /run/nexusq-knob-volume.log ]; then
     echo "--- /run/nexusq-knob-volume.log ---"
     tail -n 80 /run/nexusq-knob-volume.log 2>/dev/null || cat /run/nexusq-knob-volume.log
@@ -1723,6 +3088,17 @@ mount -t tmpfs tmpfs /run 2>/dev/null || true
 grep -q ' /dev/shm ' /proc/mounts 2>/dev/null || mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 mkdir -p /run
 mount -o remount,rw / 2>/dev/null || true
+
+ensure_sbin_compat() {
+    mkdir -p /sbin 2>/dev/null || true
+    for tool in modprobe depmod; do
+        if [ ! -x "/sbin/$tool" ] && [ -x "/usr/sbin/$tool" ]; then
+            ln -sf "/usr/sbin/$tool" "/sbin/$tool" 2>/dev/null || true
+        fi
+    done
+}
+
+ensure_sbin_compat
 
 configure_usb_gadget() {
     CFG=/sys/kernel/config
@@ -1836,6 +3212,12 @@ ip link set usb0 up 2>/dev/null || true
 ip addr add 169.254.42.2/16 dev usb0 2>/dev/null || true
 ip addr add 172.16.42.2/24 dev usb0 2>/dev/null || true
 
+if [ -x /sbin/nq-start-adbd ]; then
+    /sbin/nq-start-adbd || true
+elif [ -x /usr/sbin/nq-start-adbd ]; then
+    /usr/sbin/nq-start-adbd || true
+fi
+
 if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.conf ] || [ -s /tmp/wpa_supplicant.conf ]; then
     /sbin/nq-start-network
 fi
@@ -1860,8 +3242,8 @@ if [ -x /sbin/nq-start-led-visualizer ]; then
     /sbin/nq-start-led-visualizer || true
 fi
 
-if [ -x /sbin/nq-start-adbd ]; then
-    /sbin/nq-start-adbd || true
+if [ -x /sbin/nq-start-nfc-jukebox ]; then
+    /sbin/nq-start-nfc-jukebox || true
 fi
 
 if command -v busybox >/dev/null 2>&1; then
@@ -1895,6 +3277,8 @@ Expected files:
 - /etc/nexusq/squeezelite.env
 - /etc/nexusq/knob-volume.env
 - /etc/nexusq/led-visualizer.env
+- /etc/nexusq/somafm.env
+- /etc/nexusq/somafm-tags.conf
 - /etc/nexusq/adbd.env
 
 Runtime-only test files in /run/nexusq override these persistent files.
@@ -1910,6 +3294,7 @@ Runtime-only test files in /run/nexusq override these persistent files.
         (root / "artifacts/bin/nq-adbd-lite", rootfs / "usr/sbin/nq-adbd-lite"),
         (root / "artifacts/bin/nq-avr-i2c", rootfs / "usr/sbin/nq-avr-i2c"),
         (root / "artifacts/bin/nq-led-visualizer", rootfs / "usr/sbin/nq-led-visualizer"),
+        (root / "artifacts/bin/nq-nfc-poll", rootfs / "usr/bin/nq-nfc-poll"),
         (root / "build/seed-rng-arm", rootfs / "sbin/seed-rng"),
     ):
         if src.exists():

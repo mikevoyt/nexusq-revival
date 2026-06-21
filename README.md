@@ -28,6 +28,11 @@ Validated on real Nexus Q hardware in June 2026:
   amplitude visualizer can drive it during Music Assistant playback.
 - An opt-in ADB-compatible debug bridge provides root Bash shell and file sync
   for trusted local bring-up networks.
+- Prototype SomaFM NFC jukebox helpers can scan NFC tag/card UIDs through the
+  built-in PN544 or an external reader, map them to SomaFM channel ids, and
+  start local stream playback.
+- Built-in PN544 NFC card scans have been validated on real hardware, including
+  UID-to-station playback through the SomaFM jukebox loop.
 - The public boot image stays running by default; return-to-fastboot is now an
   explicit recovery command or diagnostic boot option.
 
@@ -104,6 +109,7 @@ Music Assistant player endpoint setup is documented in
 [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md).
 LED ring control and the Squeezelite visualizer are documented in
 [LED_RING_VISUALIZER.md](LED_RING_VISUALIZER.md).
+The SomaFM NFC jukebox prototype is documented in [NFC_JUKEBOX.md](NFC_JUKEBOX.md).
 
 ## Build
 

@@ -794,11 +794,11 @@ static int sync_handle_send(struct adb_stream *stream, char *spec)
 	return sync_send_fail(stream, strerror(errno));
 }
 
-static int handle_sync_service(int fd, uint32_t remote_id)
+static int handle_sync_service(int fd, uint32_t local_id, uint32_t remote_id)
 {
 	struct adb_stream stream = {
 		.fd = fd,
-		.local_id = SHELL_LOCAL_ID,
+		.local_id = local_id,
 		.remote_id = remote_id,
 	};
 
@@ -863,11 +863,12 @@ static void trigger_reboot(const char *target)
 	_exit(127);
 }
 
-static int handle_text_service(int fd, uint32_t remote_id, const char *text)
+static int handle_text_service(int fd, uint32_t local_id, uint32_t remote_id,
+			       const char *text)
 {
 	struct adb_stream stream = {
 		.fd = fd,
-		.local_id = SHELL_LOCAL_ID,
+		.local_id = local_id,
 		.remote_id = remote_id,
 	};
 
@@ -877,6 +878,73 @@ static int handle_text_service(int fd, uint32_t remote_id, const char *text)
 	return 0;
 }
 
+struct adb_shell_channel {
+	bool open;
+	bool can_send;
+	uint32_t local_id;
+	uint32_t remote_id;
+	int pty_fd;
+	pid_t shell_pid;
+};
+
+#define MAX_SHELL_CHANNELS 8
+
+static struct adb_shell_channel *find_channel_by_local_id(
+	struct adb_shell_channel *channels, uint32_t local_id)
+{
+	size_t i;
+
+	for (i = 0; i < MAX_SHELL_CHANNELS; i++)
+		if (channels[i].open && channels[i].local_id == local_id)
+			return &channels[i];
+	return NULL;
+}
+
+static struct adb_shell_channel *alloc_channel(
+	struct adb_shell_channel *channels)
+{
+	size_t i;
+
+	for (i = 0; i < MAX_SHELL_CHANNELS; i++)
+		if (!channels[i].open)
+			return &channels[i];
+	return NULL;
+}
+
+static bool any_channel_open(const struct adb_shell_channel *channels)
+{
+	size_t i;
+
+	for (i = 0; i < MAX_SHELL_CHANNELS; i++)
+		if (channels[i].open)
+			return true;
+	return false;
+}
+
+static void close_shell_channel(struct adb_shell_channel *ch)
+{
+	if (!ch || !ch->open)
+		return;
+	if (ch->pty_fd >= 0) {
+		close(ch->pty_fd);
+		ch->pty_fd = -1;
+	}
+	if (ch->shell_pid > 0) {
+		kill(ch->shell_pid, SIGHUP);
+		reap_child(ch->shell_pid);
+		ch->shell_pid = -1;
+	}
+	ch->open = false;
+}
+
+static void close_all_shell_channels(struct adb_shell_channel *channels)
+{
+	size_t i;
+
+	for (i = 0; i < MAX_SHELL_CHANNELS; i++)
+		close_shell_channel(&channels[i]);
+}
+
 static int handle_transport(int fd)
 {
 	static const char banner[] =
@@ -884,13 +952,15 @@ static int handle_transport(int fd)
 		"ro.product.model=Nexus Q;"
 		"ro.product.device=steelhead;"
 		"features=";
+	struct adb_shell_channel channels[MAX_SHELL_CHANNELS];
 	unsigned char data[A_MAXDATA + 1];
 	struct adb_msg msg;
-	uint32_t remote_id = 0;
-	bool channel_open = false;
-	bool can_send = true;
-	int pty_fd = -1;
-	pid_t shell_pid = -1;
+	uint32_t next_local_id = 1;
+	size_t i;
+
+	memset(channels, 0, sizeof(channels));
+	for (i = 0; i < MAX_SHELL_CHANNELS; i++)
+		channels[i].pty_fd = -1;
 
 	while (keep_running) {
 		int ret = adb_recv(fd, &msg, data, sizeof(data) - 1);
@@ -912,37 +982,48 @@ static int handle_transport(int fd)
 
 		FD_ZERO(&rfds);
 		FD_SET(fd, &rfds);
-		if (channel_open && can_send && pty_fd >= 0) {
-			FD_SET(pty_fd, &rfds);
-			if (pty_fd > maxfd)
-				maxfd = pty_fd;
+		for (i = 0; i < MAX_SHELL_CHANNELS; i++) {
+			if (!channels[i].open || !channels[i].can_send ||
+			    channels[i].pty_fd < 0)
+				continue;
+			FD_SET(channels[i].pty_fd, &rfds);
+			if (channels[i].pty_fd > maxfd)
+				maxfd = channels[i].pty_fd;
 		}
 
 		ret = select(maxfd + 1, &rfds, NULL, NULL, NULL);
 		if (ret < 0) {
 			if (errno == EINTR) {
-				reap_child(shell_pid);
+				for (i = 0; i < MAX_SHELL_CHANNELS; i++)
+					if (channels[i].open)
+						reap_child(channels[i].shell_pid);
 				continue;
 			}
 			break;
 		}
 
-		if (pty_fd >= 0 && FD_ISSET(pty_fd, &rfds)) {
-			ssize_t n = read(pty_fd, data, A_MAXDATA);
+		for (i = 0; i < MAX_SHELL_CHANNELS; i++) {
+			struct adb_shell_channel *ch = &channels[i];
+			ssize_t n;
 
+			if (!ch->open || ch->pty_fd < 0 ||
+			    !FD_ISSET(ch->pty_fd, &rfds))
+				continue;
+			n = read(ch->pty_fd, data, A_MAXDATA);
 			if (n > 0) {
-				if (adb_send(fd, A_WRTE, SHELL_LOCAL_ID,
-					     remote_id, data, (size_t)n) < 0)
+				if (adb_send(fd, A_WRTE, ch->local_id,
+					     ch->remote_id, data,
+					     (size_t)n) < 0)
 					break;
-				can_send = false;
+				ch->can_send = false;
 			} else {
-				adb_send(fd, A_CLSE, SHELL_LOCAL_ID, remote_id,
+				adb_send(fd, A_CLSE, ch->local_id, ch->remote_id,
 					 NULL, 0);
-				channel_open = false;
-				close(pty_fd);
-				pty_fd = -1;
+				close_shell_channel(ch);
 			}
 		}
+		if (i < MAX_SHELL_CHANNELS)
+			break;
 
 		if (!FD_ISSET(fd, &rfds))
 			continue;
@@ -955,33 +1036,29 @@ static int handle_transport(int fd)
 		case A_OPEN: {
 			const char *service = (char *)data;
 			const char *cmd = shell_command_from_service(service);
-
-			if (channel_open) {
-				adb_send(fd, A_CLSE, 0, msg.arg0, NULL, 0);
-				break;
-			}
-			remote_id = msg.arg0;
+			uint32_t local_id = next_local_id++;
 
 			if (strcmp(service, "sync:") == 0 ||
 			    strcmp(service, "sync") == 0) {
-				adb_send(fd, A_OKAY, SHELL_LOCAL_ID,
-					 remote_id, NULL, 0);
-				handle_sync_service(fd, remote_id);
+				if (any_channel_open(channels)) {
+					adb_send(fd, A_CLSE, 0, msg.arg0, NULL, 0);
+					break;
+				}
+				adb_send(fd, A_OKAY, local_id, msg.arg0, NULL, 0);
+				handle_sync_service(fd, local_id, msg.arg0);
 				break;
 			}
 			if (strncmp(service, "reboot:", 7) == 0) {
 				const char *target = service + 7;
 
-				adb_send(fd, A_OKAY, SHELL_LOCAL_ID,
-					 remote_id, NULL, 0);
-				handle_text_service(fd, remote_id, "");
+				adb_send(fd, A_OKAY, local_id, msg.arg0, NULL, 0);
+				handle_text_service(fd, local_id, msg.arg0, "");
 				trigger_reboot(target);
 				break;
 			}
 			if (strcmp(service, "root:") == 0) {
-				adb_send(fd, A_OKAY, SHELL_LOCAL_ID,
-					 remote_id, NULL, 0);
-				handle_text_service(fd, remote_id,
+				adb_send(fd, A_OKAY, local_id, msg.arg0, NULL, 0);
+				handle_text_service(fd, local_id, msg.arg0,
 						    "adbd is already running as root\n");
 				break;
 			}
@@ -990,65 +1067,71 @@ static int handle_transport(int fd)
 				break;
 			}
 
-			shell_pid = spawn_shell(&pty_fd, cmd);
-			if (shell_pid < 0) {
-				static const char fail[] = "failed to spawn shell\n";
-
-				adb_send(fd, A_OKAY, SHELL_LOCAL_ID, remote_id,
-					 NULL, 0);
-				adb_send(fd, A_WRTE, SHELL_LOCAL_ID, remote_id,
-					 fail, sizeof(fail) - 1);
-				adb_send(fd, A_CLSE, SHELL_LOCAL_ID, remote_id,
-					 NULL, 0);
+			struct adb_shell_channel *ch = alloc_channel(channels);
+			if (!ch) {
+				adb_send(fd, A_CLSE, 0, msg.arg0, NULL, 0);
 				break;
 			}
-			channel_open = true;
-			can_send = true;
-			adb_send(fd, A_OKAY, SHELL_LOCAL_ID, remote_id,
-				 NULL, 0);
+
+			ch->shell_pid = spawn_shell(&ch->pty_fd, cmd);
+			if (ch->shell_pid < 0) {
+				static const char fail[] = "failed to spawn shell\n";
+
+				adb_send(fd, A_OKAY, local_id, msg.arg0, NULL, 0);
+				adb_send(fd, A_WRTE, local_id, msg.arg0,
+					 fail, sizeof(fail) - 1);
+				adb_send(fd, A_CLSE, local_id, msg.arg0, NULL, 0);
+				memset(ch, 0, sizeof(*ch));
+				ch->pty_fd = -1;
+				break;
+			}
+			ch->open = true;
+			ch->can_send = true;
+			ch->local_id = local_id;
+			ch->remote_id = msg.arg0;
+			adb_send(fd, A_OKAY, ch->local_id, ch->remote_id, NULL, 0);
 		} break;
-		case A_OKAY:
-			can_send = true;
+		case A_OKAY: {
+			struct adb_shell_channel *ch =
+				find_channel_by_local_id(channels, msg.arg1);
+
+			if (ch)
+				ch->can_send = true;
 			break;
-		case A_WRTE:
-			if (channel_open && pty_fd >= 0) {
-				adb_send(fd, A_OKAY, SHELL_LOCAL_ID, remote_id,
+		}
+		case A_WRTE: {
+			struct adb_shell_channel *ch =
+				find_channel_by_local_id(channels, msg.arg1);
+
+			if (ch && ch->pty_fd >= 0) {
+				adb_send(fd, A_OKAY, ch->local_id, ch->remote_id,
 					 NULL, 0);
 				if (msg.data_length)
-					write_full(pty_fd, data,
-						   msg.data_length);
+					write_full(ch->pty_fd, data, msg.data_length);
 			} else {
-				adb_send(fd, A_CLSE, SHELL_LOCAL_ID, msg.arg0,
-					 NULL, 0);
+				adb_send(fd, A_CLSE, msg.arg1, msg.arg0, NULL, 0);
 			}
 			break;
-		case A_CLSE:
-			channel_open = false;
-			if (pty_fd >= 0) {
-				close(pty_fd);
-				pty_fd = -1;
-			}
-			if (shell_pid > 0) {
-				kill(shell_pid, SIGHUP);
-				reap_child(shell_pid);
-				shell_pid = -1;
-			}
+		}
+		case A_CLSE: {
+			struct adb_shell_channel *ch =
+				find_channel_by_local_id(channels, msg.arg1);
+
+			close_shell_channel(ch);
 			break;
+		}
 		case A_SYNC:
 			break;
 		default:
 			break;
 		}
 
-		reap_child(shell_pid);
+		for (i = 0; i < MAX_SHELL_CHANNELS; i++)
+			if (channels[i].open)
+				reap_child(channels[i].shell_pid);
 	}
 
-	if (pty_fd >= 0)
-		close(pty_fd);
-	if (shell_pid > 0) {
-		kill(shell_pid, SIGHUP);
-		waitpid(shell_pid, NULL, 0);
-	}
+	close_all_shell_channels(channels);
 
 	return 0;
 }
@@ -1106,6 +1189,7 @@ int main(int argc, char **argv)
 		struct sockaddr_in peer;
 		socklen_t peer_len = sizeof(peer);
 		int fd = accept(listener, (struct sockaddr *)&peer, &peer_len);
+		pid_t pid;
 
 		if (fd < 0) {
 			if (errno == EINTR)
@@ -1114,7 +1198,22 @@ int main(int argc, char **argv)
 			break;
 		}
 
-		handle_transport(fd);
+		pid = fork();
+		if (pid < 0) {
+			perror("fork");
+			handle_transport(fd);
+			close(fd);
+			continue;
+		}
+
+		if (pid == 0) {
+			close(listener);
+			signal(SIGCHLD, SIG_DFL);
+			handle_transport(fd);
+			close(fd);
+			_exit(0);
+		}
+
 		close(fd);
 	}
 

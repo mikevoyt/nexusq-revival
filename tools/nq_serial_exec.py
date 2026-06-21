@@ -18,7 +18,7 @@ import time
 
 
 DEFAULT_DEVICE = "/dev/cu.usbmodemAW1S122505241"
-PROMPT_RE = re.compile(rb"(?:^|\r|\n)/ # ")
+PROMPT_RE = re.compile(rb"(?:^|\r|\n)(?:/ # ?|root@[^:\r\n]+:[^\r\n#]*# ?)")
 
 
 def configure_serial(fd: int, baud: int) -> None:

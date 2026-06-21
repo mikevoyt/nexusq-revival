@@ -5,6 +5,7 @@ export PATH
 
 LOG=/run/nexusq-adbd.log
 PID=/run/nq-adbd-lite.pid
+LOCK=/run/nq-adbd-lite.lock
 mkdir -p /run /run/nexusq
 : >"$LOG"
 exec >>"$LOG" 2>&1
@@ -19,9 +20,10 @@ for env in /etc/nexusq/adbd.env /run/nexusq/adbd.env /tmp/adbd.env; do
     . "$env"
 done
 
-: "${NQ_ADBD_ENABLE:=0}"
+: "${NQ_ADBD_ENABLE:=1}"
 : "${NQ_ADBD_PORT:=5555}"
 : "${NQ_ADBD_SHELL:=}"
+: "${NQ_ADBD_RESTART:=0}"
 export NQ_ADBD_SHELL
 
 pid_live() {
@@ -42,8 +44,44 @@ adbd_live() {
     return 1
 }
 
+port_listening() {
+    port_hex="$(printf '%04X' "$NQ_ADBD_PORT" 2>/dev/null || true)"
+    [ -n "$port_hex" ] || return 1
+    awk -v port=":$port_hex" '
+        $2 ~ port "$" && $4 == "0A" { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+
+acquire_lock() {
+    tries=0
+    while ! mkdir "$LOCK" 2>/dev/null; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 10 ]; then
+            echo "[nq-adbd-lite] another start is active"
+            exit 0
+        fi
+        sleep 1
+    done
+    trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
+}
+
+stop_adbd() {
+    live_pids=
+    for pid in $(pgrep -x nq-adbd-lite 2>/dev/null || pidof nq-adbd-lite 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
+    sleep 1
+    for pid in $live_pids; do
+        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+    rm -f "$PID"
+}
+
 if [ "$NQ_ADBD_ENABLE" != "1" ]; then
-    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1"
+    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1 to enable"
     exit 0
 fi
 
@@ -52,26 +90,43 @@ if [ ! -x /usr/sbin/nq-adbd-lite ]; then
     exit 0
 fi
 
+acquire_lock
+
+if [ "$NQ_ADBD_RESTART" = "1" ]; then
+    stop_adbd
+fi
+
 if [ -s "$PID" ]; then
     old_pid="$(cat "$PID" 2>/dev/null || true)"
-    if pid_live "$old_pid"; then
+    if pid_live "$old_pid" && port_listening; then
         echo "[nq-adbd-lite] already running pid=$old_pid"
         exit 0
     fi
 fi
-if adbd_live; then
+if adbd_live && port_listening; then
     echo "[nq-adbd-lite] already running"
     exit 0
 fi
-
-/usr/sbin/nq-adbd-lite "$NQ_ADBD_PORT" &
-echo "$!" >"$PID"
-sleep 1
-
-if pid_live "$(cat "$PID")"; then
-    echo "[nq-adbd-lite] pid=$(cat "$PID") port=$NQ_ADBD_PORT"
-    exit 0
+if adbd_live; then
+    echo "[nq-adbd-lite] stale process without listener; restarting"
+    stop_adbd
 fi
+
+attempt=1
+while [ "$attempt" -le 5 ]; do
+    /usr/sbin/nq-adbd-lite "$NQ_ADBD_PORT" &
+    echo "$!" >"$PID"
+    sleep 1
+
+    if pid_live "$(cat "$PID")" && port_listening; then
+        echo "[nq-adbd-lite] pid=$(cat "$PID") port=$NQ_ADBD_PORT"
+        exit 0
+    fi
+    echo "[nq-adbd-lite] start attempt $attempt failed"
+    pid_live "$(cat "$PID" 2>/dev/null || true)" && kill "$(cat "$PID")" 2>/dev/null || true
+    sleep 1
+    attempt=$((attempt + 1))
+done
 
 echo "[nq-adbd-lite] failed to stay running"
 exit 1

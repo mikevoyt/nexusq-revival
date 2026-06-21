@@ -12,6 +12,8 @@ MODULE_PATTERNS = (
     "sound/soc/ti/snd-soc-ti-sdma.ko",
     "sound/soc/ti/snd-soc-omap-mcbsp.ko",
     "sound/soc/ti/snd-soc-steelhead-tas5713.ko",
+    "net/nfc/**/*.ko",
+    "drivers/nfc/pn544/*.ko",
     "drivers/net/wireless/broadcom/brcm80211/**/*.ko",
 )
 
