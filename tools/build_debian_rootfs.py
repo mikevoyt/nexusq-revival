@@ -2,10 +2,12 @@
 
 import argparse
 import lzma
+import math
 import os
 import re
 import secrets
 import shutil
+import struct
 import subprocess
 import sys
 import urllib.request
@@ -215,6 +217,45 @@ def write_text(path, content, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     set_owner_mode(path, mode)
+
+
+def write_binary(path, content, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    set_owner_mode(path, mode)
+
+
+def make_tone_wav(seconds=0.55, rate=48000, amplitude=0.23):
+    frames = int(rate * seconds)
+    notes = (
+        (0.00, 0.26, 659.25),
+        (0.22, 0.33, 987.77),
+    )
+    data = bytearray()
+    for i in range(frames):
+        t = i / rate
+        mixed = 0.0
+        for start, duration, freq in notes:
+            local = t - start
+            if local < 0 or local >= duration:
+                continue
+            env = min(1.0, local / 0.018, (duration - local) / 0.075)
+            phase = 2 * math.pi * freq * local
+            mixed += env * (math.sin(phase) + 0.28 * math.sin(phase * 2))
+        mixed = max(-1.0, min(1.0, mixed * amplitude))
+        sample = int(32767 * mixed)
+        data.extend(struct.pack("<hh", sample, sample))
+    byte_rate = rate * 2 * 2
+    block_align = 2 * 2
+    return (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(data))
+        + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, 2, rate, byte_rate, block_align, 16)
+        + b"data"
+        + struct.pack("<I", len(data))
+        + bytes(data)
+    )
 
 
 def random_password_hash():
@@ -1742,16 +1783,28 @@ if ! command -v mpg123 >/dev/null 2>&1; then
     exit 1
 fi
 
-if command -v amixer >/dev/null 2>&1; then
-    speaker_volume="$NQ_PLAY_SPEAKER_VOLUME"
-    case "$speaker_volume" in
-        *,*) ;;
-        *) speaker_volume="$speaker_volume,$speaker_volume" ;;
+preserve_value() {
+    case "${1:-}" in
+        ""|preserve|keep|current|none) return 0 ;;
     esac
+    return 1
+}
 
-    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Switch" "$NQ_PLAY_SPEAKER_SWITCH" || true
-    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Volume" "$speaker_volume" || true
-    amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Master Volume" "$NQ_PLAY_MASTER_VOLUME" || true
+if command -v amixer >/dev/null 2>&1; then
+    preserve_value "$NQ_PLAY_SPEAKER_SWITCH" || \\
+        amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Switch" "$NQ_PLAY_SPEAKER_SWITCH" || true
+
+    if ! preserve_value "$NQ_PLAY_SPEAKER_VOLUME"; then
+        speaker_volume="$NQ_PLAY_SPEAKER_VOLUME"
+        case "$speaker_volume" in
+            *,*) ;;
+            *) speaker_volume="$speaker_volume,$speaker_volume" ;;
+        esac
+        amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Speaker Volume" "$speaker_volume" || true
+    fi
+
+    preserve_value "$NQ_PLAY_MASTER_VOLUME" || \\
+        amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Master Volume" "$NQ_PLAY_MASTER_VOLUME" || true
 fi
 
 exec mpg123 \\
@@ -1972,8 +2025,8 @@ done
 
 : "${NQ_SOMAFM_STOP_SQUEEZELITE:=1}"
 : "${NQ_SOMAFM_MIXER_CARD:=0}"
-: "${NQ_SOMAFM_MASTER_VOLUME:=190}"
-: "${NQ_SOMAFM_SPEAKER_VOLUME:=204}"
+: "${NQ_SOMAFM_MASTER_VOLUME:=preserve}"
+: "${NQ_SOMAFM_SPEAKER_VOLUME:=preserve}"
 : "${NQ_SOMAFM_SPEAKER_SWITCH:=on}"
 : "${NQ_SOMAFM_OUTPUT:=hw:0,0}"
 : "${NQ_SOMAFM_RATE:=48000}"
@@ -2309,6 +2362,88 @@ exit "$rc"
 """,
         0o755,
     )
+    write_binary(rootfs / "usr/share/nexusq/nfc-ack.wav", make_tone_wav(), 0o644)
+    write_text(
+        rootfs / "usr/bin/nq-nfc-ack",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_NFC_ACK_ENABLE:=1}"
+: "${NQ_NFC_ACK_WAV:=/usr/share/nexusq/nfc-ack.wav}"
+: "${NQ_NFC_ACK_MIXER_CARD:=0}"
+: "${NQ_NFC_ACK_SPEAKER_SWITCH:=on}"
+: "${NQ_NFC_ACK_OUTPUT:=hw:0,0}"
+: "${NQ_NFC_ACK_TIMEOUT:=1}"
+: "${NQ_NFC_ACK_STOP_PLAYER:=1}"
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stop_pid_file() {
+    pid_file="$1"
+    [ -s "$pid_file" ] || return 0
+    old_pid="$(cat "$pid_file" 2>/dev/null || true)"
+    [ -z "$old_pid" ] || kill "$old_pid" 2>/dev/null || true
+    rm -f "$pid_file"
+}
+
+stop_proc_name() {
+    name="$1"
+    live_pids=
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" || continue
+        live_pids="$live_pids $pid"
+    done
+    [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        still_live=
+        for pid in $live_pids; do
+            pid_live "$pid" && still_live=1
+        done
+        [ -n "$still_live" ] || break
+        sleep 0.05 2>/dev/null || sleep 1
+    done
+    for pid in $live_pids; do
+        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+}
+
+[ "$NQ_NFC_ACK_ENABLE" = "1" ] || exit 0
+command -v aplay >/dev/null 2>&1 || exit 0
+[ -r "$NQ_NFC_ACK_WAV" ] || exit 0
+
+if [ "$NQ_NFC_ACK_STOP_PLAYER" = "1" ]; then
+    stop_pid_file /run/nq-somafm.pid
+    stop_proc_name mpg123
+fi
+
+if command -v amixer >/dev/null 2>&1 && [ -n "$NQ_NFC_ACK_SPEAKER_SWITCH" ]; then
+    amixer -q -c "$NQ_NFC_ACK_MIXER_CARD" cset name="Speaker Switch" "$NQ_NFC_ACK_SPEAKER_SWITCH" || true
+fi
+
+if command -v timeout >/dev/null 2>&1; then
+    timeout "$NQ_NFC_ACK_TIMEOUT" aplay -D "$NQ_NFC_ACK_OUTPUT" -q "$NQ_NFC_ACK_WAV" || true
+else
+    aplay -D "$NQ_NFC_ACK_OUTPUT" -q "$NQ_NFC_ACK_WAV" || true
+fi
+exit 0
+""",
+        0o755,
+    )
     write_text(
         rootfs / "usr/sbin/nq-nfc-jukebox",
         """#!/bin/sh
@@ -2326,8 +2461,11 @@ done
 : "${NQ_NFC_TAGS:=/etc/nexusq/somafm-tags.conf}"
 : "${NQ_NFC_UNKNOWN_LOG:=/run/nexusq-nfc-unknown-tags.log}"
 : "${NQ_NFC_COOLDOWN_SECONDS:=5}"
-: "${NQ_NFC_IDLE_SLEEP:=2}"
+: "${NQ_NFC_IDLE_SLEEP:=0}"
+: "${NQ_NFC_SCAN_BACKEND:=auto}"
+: "${NQ_NFC_SCAN_TIMEOUT:=1}"
 : "${NQ_NFC_DEBUG:=0}"
+: "${NQ_NFC_ACK_ENABLE:=1}"
 
 log() {
     echo "[nq-nfc-jukebox] $*"
@@ -2371,7 +2509,7 @@ last_uid=
 last_time=0
 
 while true; do
-    out="$(nq-nfc-scan --uid-only 2>&1)"
+    out="$(nq-nfc-scan --uid-only --backend "$NQ_NFC_SCAN_BACKEND" --timeout "$NQ_NFC_SCAN_TIMEOUT" 2>&1)"
     rc="$?"
     [ "$NQ_NFC_DEBUG" = "1" ] && printf '%s\\n' "$out"
     uid="$(printf '%s\\n' "$out" | awk '/^[0-9a-f]+$/ { print; exit }')"
@@ -2407,6 +2545,9 @@ while true; do
     fi
 
     log "tag uid=$uid station=$station"
+    if [ "$NQ_NFC_ACK_ENABLE" = "1" ] && command -v nq-nfc-ack >/dev/null 2>&1; then
+        nq-nfc-ack || log "ack failed"
+    fi
     /usr/bin/nq-somafm-play "$station" || log "play failed for station=$station"
     last_uid="$uid"
     last_time="$now"
