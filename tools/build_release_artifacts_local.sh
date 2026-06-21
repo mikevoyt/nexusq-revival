@@ -35,7 +35,7 @@ RAMDISK="$ROOT/artifacts/nexusq-debian-loader-initramfs.cpio.gz" \
 FRAGMENTS="$ROOT/linux66/nexusq-linux66.fragment $ROOT/linux66/nexusq-linux66-nosmp.fragment $ROOT/linux66/nexusq-linux66-audio.fragment $ROOT/linux66/nexusq-linux66-input-modular.fragment $ROOT/linux66/nexusq-linux66-usbecm.fragment $ROOT/linux66/nexusq-linux66-nfc.fragment $ROOT/linux66/nexusq-linux66-wifi-public.fragment" \
 CMDLINE="console=ttyO2,115200n8 earlyprintk ignore_loglevel root=/dev/ram0 rdinit=/init init=/init nq.root=/dev/mmcblk0p13 panic=30 oops=panic" \
 BUILD_MODULES=1 \
-BUILD_MODULES_TARGETS="drivers/input/misc/steelhead_avr.ko drivers/net/wireless/broadcom/brcm80211/brcmutil/brcmutil.ko drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko drivers/net/wireless/broadcom/brcm80211/brcmfmac/wcc/brcmfmac-wcc.ko" \
+BUILD_MODULES_TARGETS="drivers/input/misc/steelhead_avr.ko net/nfc/nfc.ko net/nfc/hci/hci.ko drivers/nfc/pn544/pn544.ko drivers/nfc/pn544/pn544_i2c.ko drivers/net/wireless/broadcom/brcm80211/brcmutil/brcmutil.ko drivers/net/wireless/broadcom/brcm80211/brcmfmac/brcmfmac.ko drivers/net/wireless/broadcom/brcm80211/brcmfmac/wcc/brcmfmac-wcc.ko" \
 	"$ROOT/tools/build_linux66_omap2plus_local.sh"
 
 python3 "$ROOT/tools/install_linux66_modules.py" \

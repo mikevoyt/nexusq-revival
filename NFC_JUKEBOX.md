@@ -11,8 +11,8 @@ to the validated 48 kHz TAS5713 path. It does not require Music Assistant.
 
 The original Nexus Q hardware has an NXP PN544 NFC controller on the mezzanine
 board. The Linux 6.6 device tree now describes that built-in controller using
-the original Steelhead I2C/GPIO wiring, and the rootfs includes a small
-kernel-NFC poller for card UID scans.
+the original Steelhead I2C/GPIO wiring, and the rootfs includes load-on-demand
+kernel NFC modules plus a small poller for card UID scans.
 
 The scripts still support external USB NFC readers through `libnfc` as a
 fallback. External-reader testing needs a host-mode USB setup; the normal
@@ -71,11 +71,12 @@ Stop local SomaFM playback:
 nq-somafm-play --stop
 ```
 
-Check that the built-in PN544 probed:
+Check that the built-in PN544 can load and probe:
 
 ```sh
 nq-player-status
 dmesg | grep -Ei 'pn544|nfc|i2c3'
+nq-nfc-scan --backend kernel --timeout 5
 ls -l /sys/class/nfc
 nq-nfc-poll --list
 ```
@@ -190,9 +191,9 @@ generic PN544 example:
   - `usbb2_ulpitll_dat3.gpio_164`
 
 The release build includes `linux66/nexusq-linux66-nfc.fragment`, which builds
-the Linux NFC core, HCI, SHDLC, and PN544 I2C driver into the boot image. On a
-successful boot, expect `/sys/class/nfc/nfc0` and `nq-nfc-poll --list` to show a
-kernel NFC device.
+the Linux NFC core, HCI, and PN544 I2C driver as modules. `nq-nfc-scan` loads
+`pn544_i2c` on demand, then expects `/sys/class/nfc/nfc0` and
+`nq-nfc-poll --list` to show a kernel NFC device.
 
 If the PN544 does not appear, capture:
 

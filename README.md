@@ -42,8 +42,9 @@ Still experimental:
 - HDMI, S/PDIF, advanced LED effects, and cap-touch handling are not finished.
 - The LED visualizer is an early amplitude-based effect, not a frequency-band
   or Music Assistant UI-integrated visualizer yet.
-- Built-in PN544 NFC is wired into the modern DTS and has a kernel-NFC scanner,
-  but full real-card validation is still in progress.
+- Built-in PN544 NFC is wired into the modern DTS and has load-on-demand kernel
+  modules plus a kernel-NFC scanner, but full real-card validation is still in
+  progress.
 - TAS5713 speaker validation has focused on one wired speaker so far; full
   stereo/channel-routing validation is still pending.
 - Wi-Fi depends on calibration from an existing stock `system` partition, or a

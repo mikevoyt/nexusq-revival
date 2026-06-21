@@ -2077,6 +2077,34 @@ start_pcscd() {
     sleep 1
 }
 
+load_kernel_nfc() {
+    command -v modprobe >/dev/null 2>&1 || return 0
+    ls /sys/class/nfc/nfc* >/dev/null 2>&1 && return 0
+
+    if ! modprobe pn544_i2c 2>/dev/null; then
+        krel="$(uname -r 2>/dev/null || true)"
+        if [ -n "$krel" ] && command -v depmod >/dev/null 2>&1; then
+            depmod -a "$krel" 2>/dev/null || true
+            modprobe pn544_i2c 2>/dev/null && {
+                sleep 1
+                return 0
+            }
+        fi
+        if [ -n "$krel" ] && command -v insmod >/dev/null 2>&1; then
+            mods="/lib/modules/$krel/kernel"
+            for ko in \
+                "$mods/net/nfc/nfc.ko" \
+                "$mods/net/nfc/hci/hci.ko" \
+                "$mods/drivers/nfc/pn544/pn544.ko" \
+                "$mods/drivers/nfc/pn544/pn544_i2c.ko"; do
+                [ -r "$ko" ] || continue
+                insmod "$ko" 2>/dev/null || true
+            done
+        fi
+    fi
+    sleep 1
+}
+
 parse_uid() {
     awk '
         /^nq-nfc-poll: uid=/ {
@@ -2105,6 +2133,7 @@ parse_uid() {
 
 kernel_available() {
     command -v nq-nfc-poll >/dev/null 2>&1 || return 1
+    load_kernel_nfc
     ls /sys/class/nfc/nfc* >/dev/null 2>&1
 }
 
