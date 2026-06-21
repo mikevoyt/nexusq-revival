@@ -72,8 +72,9 @@ cat /run/nexusq-network.log
 
 ## ADB Debug Bridge
 
-Development images can start a small ADB-compatible debug daemon on TCP port
-5555. It is disabled unless explicitly enabled in device-local config:
+Development images start a small ADB-compatible debug daemon on TCP port 5555
+by default for prototype bring-up. Device-local config can change the port or
+disable it:
 
 ```sh
 cat >/etc/nexusq/adbd.env <<'EOF'
@@ -86,19 +87,21 @@ EOF
 /sbin/nq-start-adbd
 ```
 
+Set `NQ_ADBD_ENABLE=0` and restart the service to disable it.
+
 Connect from a development host with Android platform-tools:
 
 ```sh
-adb connect 192.168.86.38:5555
-adb -s 192.168.86.38:5555 shell 'id; uname -a'
-adb -s 192.168.86.38:5555 push local-file.txt /tmp/local-file.txt
-adb -s 192.168.86.38:5555 pull /tmp/local-file.txt ./local-file.txt
+tools/nq-adb-connect.sh
+adb -s 169.254.42.2:5555 shell 'id; uname -a'
+adb -s 169.254.42.2:5555 push local-file.txt /tmp/local-file.txt
+adb -s 169.254.42.2:5555 pull /tmp/local-file.txt ./local-file.txt
 ```
 
 The repository includes a host smoke test for this surface:
 
 ```sh
-ADB=/path/to/platform-tools/adb tools/test_adb_lite.sh 192.168.86.38:5555
+ADB=/path/to/platform-tools/adb tools/test_adb_lite.sh 169.254.42.2:5555
 ```
 
 The daemon provides unauthenticated root access for trusted local bring-up

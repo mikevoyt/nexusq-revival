@@ -12,6 +12,17 @@ mount -t tmpfs tmpfs /run 2>/dev/null || true
 mkdir -p /run
 mount -o remount,rw / 2>/dev/null || true
 
+ensure_sbin_compat() {
+    mkdir -p /sbin 2>/dev/null || true
+    for tool in modprobe depmod; do
+        if [ ! -x "/sbin/$tool" ] && [ -x "/usr/sbin/$tool" ]; then
+            ln -sf "/usr/sbin/$tool" "/sbin/$tool" 2>/dev/null || true
+        fi
+    done
+}
+
+ensure_sbin_compat
+
 configure_usb_gadget() {
     CFG=/sys/kernel/config
     mkdir -p "$CFG" 2>/dev/null || true
@@ -123,6 +134,12 @@ ip link set usb0 up 2>/dev/null || true
 ip addr add 169.254.42.2/16 dev usb0 2>/dev/null || true
 ip addr add 172.16.42.2/24 dev usb0 2>/dev/null || true
 
+if [ -x /sbin/nq-start-adbd ]; then
+    /sbin/nq-start-adbd || true
+elif [ -x /usr/sbin/nq-start-adbd ]; then
+    /usr/sbin/nq-start-adbd || true
+fi
+
 if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.conf ] || [ -s /tmp/wpa_supplicant.conf ]; then
     /sbin/nq-start-network
 fi
@@ -141,10 +158,6 @@ fi
 
 if [ -x /sbin/nq-start-knob-volume ]; then
     /sbin/nq-start-knob-volume || true
-fi
-
-if [ -x /sbin/nq-start-adbd ]; then
-    /sbin/nq-start-adbd || true
 fi
 
 if command -v busybox >/dev/null 2>&1; then

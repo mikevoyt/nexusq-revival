@@ -16,9 +16,9 @@ hardware volume, and faster network iteration.
   `steelhead_avr` input driver and `nq-knob-volume`.
 - Ships the tested loud passive-speaker profile by default:
   `Master Volume=231`, `Speaker Volume=207`, and knob cap `231`.
-- Provides an opt-in ADB-compatible debug bridge on TCP 5555 with root Bash
-  shell, recursive `adb push`/`adb pull`, `adb root`, and `adb reboot
-  bootloader` for trusted local bring-up networks.
+- Provides an ADB-compatible debug bridge on TCP 5555 with root Bash shell,
+  recursive `adb push`/`adb pull`, `adb root`, and `adb reboot bootloader` for
+  trusted local prototype networks.
 - Preserves stock `recovery`; manual return to fastboot remains available.
 
 ## Flash Instructions

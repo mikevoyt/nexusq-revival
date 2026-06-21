@@ -4,7 +4,7 @@
 set -eu
 
 ADB=${ADB:-adb}
-SERIAL=${1:-${NQ_ADB_SERIAL:-192.168.86.38:5555}}
+SERIAL=${1:-${NQ_ADB_SERIAL:-169.254.42.2:5555}}
 tmpdir=$(mktemp -d /tmp/nq-adb-lite.XXXXXX)
 
 cleanup() {

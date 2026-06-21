@@ -19,7 +19,7 @@ for env in /etc/nexusq/adbd.env /run/nexusq/adbd.env /tmp/adbd.env; do
     . "$env"
 done
 
-: "${NQ_ADBD_ENABLE:=0}"
+: "${NQ_ADBD_ENABLE:=1}"
 : "${NQ_ADBD_PORT:=5555}"
 : "${NQ_ADBD_SHELL:=}"
 export NQ_ADBD_SHELL
@@ -43,7 +43,7 @@ adbd_live() {
 }
 
 if [ "$NQ_ADBD_ENABLE" != "1" ]; then
-    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1"
+    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1 to enable"
     exit 0
 fi
 

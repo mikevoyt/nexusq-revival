@@ -1596,7 +1596,7 @@ for env in /etc/nexusq/adbd.env /run/nexusq/adbd.env /tmp/adbd.env; do
     . "$env"
 done
 
-: "${NQ_ADBD_ENABLE:=0}"
+: "${NQ_ADBD_ENABLE:=1}"
 : "${NQ_ADBD_PORT:=5555}"
 : "${NQ_ADBD_SHELL:=}"
 export NQ_ADBD_SHELL
@@ -1620,7 +1620,7 @@ adbd_live() {
 }
 
 if [ "$NQ_ADBD_ENABLE" != "1" ]; then
-    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1"
+    echo "[nq-adbd-lite] disabled; set NQ_ADBD_ENABLE=1 to enable"
     exit 0
 fi
 
@@ -2412,7 +2412,20 @@ if ! command -v nq-nfc-scan >/dev/null 2>&1; then
     exit 1
 fi
 
-/usr/sbin/nq-nfc-jukebox &
+run_loop='
+trap "" HUP
+while true; do
+    /usr/sbin/nq-nfc-jukebox
+    rc="$?"
+    echo "[nq-nfc-jukebox] exited rc=$rc; restarting"
+    sleep 2
+done
+'
+if command -v setsid >/dev/null 2>&1; then
+    setsid sh -c "$run_loop" </dev/null &
+else
+    sh -c "$run_loop" </dev/null &
+fi
 echo "$!" >"$PID"
 sleep 1
 
@@ -2609,6 +2622,17 @@ grep -q ' /dev/shm ' /proc/mounts 2>/dev/null || mount -t tmpfs tmpfs /dev/shm 2
 mkdir -p /run
 mount -o remount,rw / 2>/dev/null || true
 
+ensure_sbin_compat() {
+    mkdir -p /sbin 2>/dev/null || true
+    for tool in modprobe depmod; do
+        if [ ! -x "/sbin/$tool" ] && [ -x "/usr/sbin/$tool" ]; then
+            ln -sf "/usr/sbin/$tool" "/sbin/$tool" 2>/dev/null || true
+        fi
+    done
+}
+
+ensure_sbin_compat
+
 configure_usb_gadget() {
     CFG=/sys/kernel/config
     mkdir -p "$CFG" 2>/dev/null || true
@@ -2721,6 +2745,12 @@ ip link set usb0 up 2>/dev/null || true
 ip addr add 169.254.42.2/16 dev usb0 2>/dev/null || true
 ip addr add 172.16.42.2/24 dev usb0 2>/dev/null || true
 
+if [ -x /sbin/nq-start-adbd ]; then
+    /sbin/nq-start-adbd || true
+elif [ -x /usr/sbin/nq-start-adbd ]; then
+    /usr/sbin/nq-start-adbd || true
+fi
+
 if [ -s /run/nexusq/wpa_supplicant.conf ] || [ -s /etc/nexusq/wpa_supplicant.conf ] || [ -s /tmp/wpa_supplicant.conf ]; then
     /sbin/nq-start-network
 fi
@@ -2747,10 +2777,6 @@ fi
 
 if [ -x /sbin/nq-start-nfc-jukebox ]; then
     /sbin/nq-start-nfc-jukebox || true
-fi
-
-if [ -x /sbin/nq-start-adbd ]; then
-    /sbin/nq-start-adbd || true
 fi
 
 if command -v busybox >/dev/null 2>&1; then

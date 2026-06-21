@@ -6959,3 +6959,44 @@ diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristin
 +MODULE_DESCRIPTION("Google Nexus Q / Steelhead TAS5713 ASoC machine driver");
 +MODULE_AUTHOR("Google, Inc.; Nexus Q revival contributors");
 +MODULE_LICENSE("GPL");
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/nfc/pn544/pn544.c kernel/linux-6.6.142/drivers/nfc/pn544/pn544.c
+--- build/patch-pristine/linux-6.6.142/drivers/nfc/pn544/pn544.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/drivers/nfc/pn544/pn544.c	2026-06-21 09:43:31
+@@ -895,9 +895,11 @@
+ 	.check_presence = pn544_hci_check_presence,
+ 	.event_received = pn544_hci_event_received,
+ 	.fw_download = pn544_hci_fw_download,
+-	.discover_se = pn544_hci_discover_se,
+-	.enable_se = pn544_hci_enable_se,
+-	.disable_se = pn544_hci_disable_se,
++	/*
++	 * Steelhead only needs reader mode for the NFC jukebox. Its PN544 secure
++	 * element path is not useful here, and failed UICC/eSE discovery can drive
++	 * the generic NFC HCI failure path before tag polling starts.
++	 */
+ };
+ 
+ int pn544_hci_probe(void *phy_id, const struct nfc_phy_ops *phy_ops,
+diff -ruN -x .git -x build -x source -x *.o -x *.ko -x *.cmd build/patch-pristine/linux-6.6.142/drivers/nfc/pn544/i2c.c kernel/linux-6.6.142/drivers/nfc/pn544/i2c.c
+--- build/patch-pristine/linux-6.6.142/drivers/nfc/pn544/i2c.c	2026-06-01 08:43:16
++++ kernel/linux-6.6.142/drivers/nfc/pn544/i2c.c	2026-06-21 10:20:00
+@@ -239,6 +239,7 @@
+ {
+ 	struct pn544_i2c_phy *phy = phy_id;
+ 
++	phy->hard_fault = 0;
+ 	pn544_hci_i2c_enable_mode(phy, PN544_HCI_MODE);
+ 
+ 	phy->powered = 1;
+@@ -499,6 +500,11 @@
+ 	} else {
+ 		r = pn544_hci_i2c_read(phy, &skb);
+ 		if (r == -EREMOTEIO) {
++			if (!phy->powered) {
++				nfc_info(&client->dev,
++					 "ignoring I2C read while powered off\n");
++				return IRQ_HANDLED;
++			}
+ 			phy->hard_fault = r;
+ 
+ 			nfc_hci_recv_frame(phy->hdev, NULL);

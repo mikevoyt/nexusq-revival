@@ -47,8 +47,11 @@ The rootfs includes `/sbin/nq-init`, a conservative first-boot init that:
   across boots;
 - configures the USB configfs ACM+ECM gadget and starts a USB serial shell on
   `/dev/ttyGS0`;
-- starts the opt-in ADB-compatible `nq-adbd-lite` daemon when
-  `/etc/nexusq/adbd.env` sets `NQ_ADBD_ENABLE=1`;
+- starts the ADB-compatible `nq-adbd-lite` daemon on TCP 5555 by default for
+  prototype bring-up; set `NQ_ADBD_ENABLE=0` in `/etc/nexusq/adbd.env` to
+  disable it;
+- brings up ADB immediately after USB ECM gets `169.254.42.2`, before optional
+  Wi-Fi, audio, LED, or NFC services;
 - arms an `nq.autoreboot` timer only when the kernel command line explicitly
   includes `nq.autoreboot=<seconds>`;
 - configures `usb0` as `169.254.42.2/16` and `172.16.42.2/24`;
