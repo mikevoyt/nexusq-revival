@@ -2031,11 +2031,13 @@ done
 : "${NQ_SOMAFM_OUTPUT:=hw:0,0}"
 : "${NQ_SOMAFM_RATE:=48000}"
 : "${NQ_SOMAFM_ENCODING:=s16}"
-: "${NQ_SOMAFM_DEVBUFFER:=0.5}"
-: "${NQ_SOMAFM_BUFFER:=1024}"
-: "${NQ_SOMAFM_PRELOAD:=1}"
+: "${NQ_SOMAFM_DEVBUFFER:=0.15}"
+: "${NQ_SOMAFM_BUFFER:=128}"
+: "${NQ_SOMAFM_PRELOAD:=0.2}"
 : "${NQ_SOMAFM_RESTART:=1}"
 : "${NQ_SOMAFM_RESTART_DELAY:=3}"
+: "${NQ_SOMAFM_DIRECT_PREFIX:=}"
+: "${NQ_SOMAFM_DIRECT_SUFFIX:=}"
 
 usage() {
     cat <<'EOF'
@@ -2105,6 +2107,33 @@ stop_players() {
     fi
 }
 
+resolve_target() {
+    target="$1"
+    case "$target" in
+        somafm:*)
+            target="${target#somafm:}"
+            ;;
+    esac
+
+    case "$target" in
+        http://*|https://*)
+            /usr/bin/nq-somafm-url "$target"
+            return
+            ;;
+        *[!A-Za-z0-9_-]*|"")
+            /usr/bin/nq-somafm-url "$1"
+            return
+            ;;
+    esac
+
+    if [ -n "$NQ_SOMAFM_DIRECT_PREFIX" ]; then
+        printf '%s%s%s\\n' "$NQ_SOMAFM_DIRECT_PREFIX" "$target" "$NQ_SOMAFM_DIRECT_SUFFIX"
+        return
+    fi
+
+    /usr/bin/nq-somafm-url "$target"
+}
+
 if [ "$#" -ne 1 ]; then
     usage >&2
     exit 2
@@ -2131,7 +2160,7 @@ esac
 
 station="$1"
 echo "nq-somafm: resolving $station" >&2
-url="$(/usr/bin/nq-somafm-url "$station")" || exit 1
+url="$(resolve_target "$station")" || exit 1
 
 mkdir -p /run /run/nexusq
 stop_players
@@ -2186,6 +2215,7 @@ PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export PATH
 
 uid_only=0
+loop=0
 backend="${NQ_NFC_SCAN_BACKEND:-auto}"
 timeout="${NQ_NFC_SCAN_TIMEOUT:-15}"
 
@@ -2259,6 +2289,13 @@ kernel_available() {
 }
 
 scan_kernel() {
+    if [ "$loop" = "1" ]; then
+        if [ "$uid_only" = "1" ]; then
+            exec nq-nfc-poll --timeout "$timeout" --loop --uid-only
+        fi
+        exec nq-nfc-poll --timeout "$timeout" --loop
+    fi
+
     out="$(nq-nfc-poll --timeout "$timeout" 2>&1)"
     rc="$?"
     [ "$uid_only" = "1" ] || printf '%s\\n' "$out"
@@ -2275,6 +2312,11 @@ scan_kernel() {
 }
 
 scan_libnfc() {
+    if [ "$loop" = "1" ]; then
+        echo "nq-nfc-scan: --loop is only supported by the kernel backend" >&2
+        return 2
+    fi
+
     if ! command -v nfc-poll >/dev/null 2>&1; then
         echo "nq-nfc-scan: nfc-poll is not installed" >&2
         return 1
@@ -2302,9 +2344,13 @@ while [ "$#" -gt 0 ]; do
             uid_only=1
             shift
             ;;
+        --loop)
+            loop=1
+            shift
+            ;;
         --backend)
             [ "$#" -ge 2 ] || {
-                echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+                echo "usage: nq-nfc-scan [--uid-only] [--loop] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
                 exit 2
             }
             backend="$2"
@@ -2312,18 +2358,18 @@ while [ "$#" -gt 0 ]; do
             ;;
         --timeout)
             [ "$#" -ge 2 ] || {
-                echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+                echo "usage: nq-nfc-scan [--uid-only] [--loop] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
                 exit 2
             }
             timeout="$2"
             shift 2
             ;;
         -h|--help)
-            echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]"
+            echo "usage: nq-nfc-scan [--uid-only] [--loop] [--backend auto|kernel|libnfc] [--timeout seconds]"
             exit 0
             ;;
         *)
-            echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+            echo "usage: nq-nfc-scan [--uid-only] [--loop] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
             exit 2
             ;;
     esac
@@ -2717,6 +2763,8 @@ done
 : "${NQ_NFC_IDLE_SLEEP:=0}"
 : "${NQ_NFC_SCAN_BACKEND:=auto}"
 : "${NQ_NFC_SCAN_TIMEOUT:=1}"
+: "${NQ_NFC_SCAN_LOOP:=0}"
+: "${NQ_NFC_SCAN_RESTART_SLEEP:=1}"
 : "${NQ_NFC_DEBUG:=0}"
 : "${NQ_NFC_ACK_ENABLE:=1}"
 
@@ -2761,6 +2809,56 @@ log "watching for NFC tags"
 last_uid=
 last_time=0
 
+handle_uid() {
+    uid="$1"
+    [ -n "$uid" ] || return 0
+    now="$(pid_now)"
+
+    if [ "$uid" = "$last_uid" ] && [ "$now" -gt 0 ] 2>/dev/null && [ "$last_time" -gt 0 ] 2>/dev/null; then
+        delta=$((now - last_time))
+        if [ "$delta" -lt "$NQ_NFC_COOLDOWN_SECONDS" ] 2>/dev/null; then
+            log "ignored repeat tag uid=$uid"
+            return 0
+        fi
+    fi
+
+    station="$(station_for_uid "$uid" | head -n 1)"
+    if [ -z "$station" ]; then
+        log "unknown tag uid=$uid"
+        printf '%s\\n' "$uid" >>"$NQ_NFC_UNKNOWN_LOG" 2>/dev/null || true
+        last_uid="$uid"
+        last_time="$now"
+        return 0
+    fi
+
+    log "tag uid=$uid station=$station"
+    if [ "$NQ_NFC_ACK_ENABLE" = "1" ] && command -v nq-nfc-ack >/dev/null 2>&1; then
+        nq-nfc-ack || log "ack failed"
+    fi
+    /usr/bin/nq-somafm-play "$station" || log "play failed for station=$station"
+    last_uid="$uid"
+    last_time="$now"
+}
+
+if [ "$NQ_NFC_SCAN_LOOP" = "1" ] && [ "$NQ_NFC_SCAN_BACKEND" != "libnfc" ]; then
+    while true; do
+        nq-nfc-scan --uid-only --loop --backend "$NQ_NFC_SCAN_BACKEND" --timeout "$NQ_NFC_SCAN_TIMEOUT" 2>&1 | while IFS= read -r line; do
+            case "$line" in
+                [0-9a-f]*)
+                    uid="$(printf '%s\\n' "$line" | awk '/^[0-9a-f]+$/ { print; exit }')"
+                    [ -z "$uid" ] || handle_uid "$uid"
+                    ;;
+                *)
+                    [ "$NQ_NFC_DEBUG" = "1" ] && printf '%s\\n' "$line"
+                    ;;
+            esac
+        done
+        rc="$?"
+        log "scan loop exited rc=$rc; restarting"
+        sleep "$NQ_NFC_SCAN_RESTART_SLEEP"
+    done
+fi
+
 while true; do
     out="$(nq-nfc-scan --uid-only --backend "$NQ_NFC_SCAN_BACKEND" --timeout "$NQ_NFC_SCAN_TIMEOUT" 2>&1)"
     rc="$?"
@@ -2778,32 +2876,7 @@ while true; do
         continue
     fi
 
-    if [ "$uid" = "$last_uid" ] && [ "$now" -gt 0 ] 2>/dev/null && [ "$last_time" -gt 0 ] 2>/dev/null; then
-        delta=$((now - last_time))
-        if [ "$delta" -lt "$NQ_NFC_COOLDOWN_SECONDS" ] 2>/dev/null; then
-            log "ignored repeat tag uid=$uid"
-            sleep "$NQ_NFC_IDLE_SLEEP"
-            continue
-        fi
-    fi
-
-    station="$(station_for_uid "$uid" | head -n 1)"
-    if [ -z "$station" ]; then
-        log "unknown tag uid=$uid"
-        printf '%s\\n' "$uid" >>"$NQ_NFC_UNKNOWN_LOG" 2>/dev/null || true
-        last_uid="$uid"
-        last_time="$now"
-        sleep "$NQ_NFC_IDLE_SLEEP"
-        continue
-    fi
-
-    log "tag uid=$uid station=$station"
-    if [ "$NQ_NFC_ACK_ENABLE" = "1" ] && command -v nq-nfc-ack >/dev/null 2>&1; then
-        nq-nfc-ack || log "ack failed"
-    fi
-    /usr/bin/nq-somafm-play "$station" || log "play failed for station=$station"
-    last_uid="$uid"
-    last_time="$now"
+    handle_uid "$uid"
     sleep "$NQ_NFC_IDLE_SLEEP"
 done
 """,
