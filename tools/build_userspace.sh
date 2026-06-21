@@ -68,7 +68,11 @@ build \
 	-o artifacts/bin/nq-led-visualizer \
 	tools/nq_led_visualizer.c
 
+build \
+	-o artifacts/bin/nq-nfc-poll \
+	tools/nq_nfc_poll.c
+
 ls -l artifacts/bin/tinyplay artifacts/bin/nqstreamd artifacts/bin/tinymix \
 	artifacts/bin/reboot-bootloader artifacts/bin/nq-knob-volume \
 	artifacts/bin/nq-adbd-lite artifacts/bin/nq-avr-i2c \
-	artifacts/bin/nq-led-visualizer
+	artifacts/bin/nq-led-visualizer artifacts/bin/nq-nfc-poll

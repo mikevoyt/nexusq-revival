@@ -9,21 +9,20 @@ The practical first prototype is a local SomaFM player plus an NFC tag listener.
 It uses `mpg123` through the existing `nq-play` wrapper, so streams are resampled
 to the validated 48 kHz TAS5713 path. It does not require Music Assistant.
 
-The original Nexus Q hardware does have NFC on the mezzanine board, and old
-stock boot logs show a `pn544` driver probing successfully. The modern Linux
-6.6 DTS in this repo does not yet describe that PN544 device, so the first
-software prototype supports libnfc/PCSC-style reader tooling and keeps the
-built-in PN544 bring-up as the next hardware task.
+The original Nexus Q hardware has an NXP PN544 NFC controller on the mezzanine
+board. The Linux 6.6 device tree now describes that built-in controller using
+the original Steelhead I2C/GPIO wiring, and the rootfs includes a small
+kernel-NFC poller for card UID scans.
 
-If you use an external USB NFC reader for early testing, the Q also needs a
-host-mode USB setup. The normal appliance image configures USB gadget serial and
-networking for bring-up, so external-reader testing may need a different USB
-boot/test arrangement.
+The scripts still support external USB NFC readers through `libnfc` as a
+fallback. External-reader testing needs a host-mode USB setup; the normal
+appliance image configures USB gadget serial/networking for bring-up.
 
 Useful references:
 
 - <https://www.wired.com/gallery/nexus-q-teardown/>
 - <https://gist.github.com/vvakame/3009802>
+- <https://android.googlesource.com/kernel/omap/+/android-omap-steelhead-3.0-ics-aah/arch/arm/mach-omap2/board-steelhead.c>
 - <https://docs.kernel.org/driver-api/nfc/nfc-pn544.html>
 - <https://somafm.com/live/directstreamlinks.html>
 
@@ -42,7 +41,11 @@ The rootfs includes:
   - Stops Squeezelite by default so ALSA is available.
   - Starts the SomaFM stream through `nq-play`.
 - `nq-nfc-scan`
-  - Runs `nfc-poll` once and prints the ISO14443A UID.
+  - Prefers the built-in PN544 through Linux NFC generic netlink.
+  - Falls back to `nfc-poll` for external libnfc-compatible readers.
+- `nq-nfc-poll`
+  - Low-level built-in PN544 test helper.
+  - Powers the kernel NFC device, starts a poll, and prints target UID data.
 - `/sbin/nq-start-nfc-jukebox`
   - Starts an opt-in NFC polling loop.
   - Maps tag UID to station id using `/etc/nexusq/somafm-tags.conf`.
@@ -63,12 +66,28 @@ Stop local SomaFM playback:
 nq-somafm-play --stop
 ```
 
+Check that the built-in PN544 probed:
+
+```sh
+nq-player-status
+dmesg | grep -Ei 'pn544|nfc|i2c3'
+ls -l /sys/class/nfc
+nq-nfc-poll --list
+```
+
 ## Learn Card UIDs
 
 Tap each card/tag and record the UID:
 
 ```sh
-nq-nfc-scan
+nq-nfc-scan --timeout 20
+```
+
+Force a specific scanner backend when debugging:
+
+```sh
+NQ_NFC_SCAN_BACKEND=kernel nq-nfc-scan --timeout 20
+NQ_NFC_SCAN_BACKEND=libnfc nq-nfc-scan
 ```
 
 The prototype maps immutable card UIDs instead of requiring NDEF parsing. You
@@ -152,15 +171,27 @@ The UID may contain colons or dashes; it is normalized before matching:
 
 ## Built-In NFC Bring-Up
 
-The remaining hardware task is to bind the Q's onboard PN544 in the modern DTS.
-Do not guess this from generic PN544 examples. We need the Steelhead-specific
-board-file details:
+The built-in PN544 node is based on Google's old Steelhead board file, not a
+generic PN544 example:
 
-- I2C bus and address.
-- IRQ GPIO.
-- Enable GPIO.
-- Firmware/download GPIO.
-- Any regulator or clock assumptions.
+- I2C bus 3 at 400 kHz.
+- PN544 I2C address `0x28`.
+- Firmware/download GPIO `162` (`gpio6 2`), initially low.
+- Enable GPIO `163` (`gpio6 3`), initially low.
+- IRQ GPIO `164` (`gpio6 4`), input pull-up, rising-edge interrupt.
+- Pad muxes:
+  - `usbb2_ulpitll_dat1.gpio_162`
+  - `usbb2_ulpitll_dat2.gpio_163`
+  - `usbb2_ulpitll_dat3.gpio_164`
 
-Once those are known, the likely kernel work is a small NFC config fragment plus
-a PN544 device node in `linux66/omap4-steelhead.dts`.
+The release build includes `linux66/nexusq-linux66-nfc.fragment`, which builds
+the Linux NFC core, HCI, SHDLC, and PN544 I2C driver into the boot image. On a
+successful boot, expect `/sys/class/nfc/nfc0` and `nq-nfc-poll --list` to show a
+kernel NFC device.
+
+If the PN544 does not appear, capture:
+
+```sh
+dmesg | grep -Ei 'pn544|nfc|i2c3|gpio'
+find /sys/bus/i2c/devices -maxdepth 2 -type l -o -type d | sort
+```

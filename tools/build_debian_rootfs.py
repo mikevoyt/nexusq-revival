@@ -461,10 +461,25 @@ pid_file_live() {
     pid_live "$(cat "$pid_file" 2>/dev/null || true)"
 }
 
-if command -v nfc-poll >/dev/null 2>&1; then
-    echo "nfc: libnfc tools installed"
+if ls /sys/class/nfc/nfc* >/dev/null 2>&1; then
+    for dev in /sys/class/nfc/nfc*; do
+        [ -e "$dev" ] || continue
+        echo "nfc: kernel device $(basename "$dev") present"
+    done
 else
-    echo "nfc: libnfc tools missing"
+    echo "nfc: kernel device missing"
+fi
+
+if command -v nq-nfc-poll >/dev/null 2>&1; then
+    echo "nfc: kernel poller installed"
+else
+    echo "nfc: kernel poller missing"
+fi
+
+if command -v nfc-poll >/dev/null 2>&1; then
+    echo "nfc: external-reader libnfc tools installed"
+else
+    echo "nfc: external-reader libnfc tools missing"
 fi
 
 if pid_file_live /run/nq-nfc-jukebox.pid; then
@@ -1909,6 +1924,10 @@ exit 1
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 export PATH
 
+uid_only=0
+backend="${NQ_NFC_SCAN_BACKEND:-auto}"
+timeout="${NQ_NFC_SCAN_TIMEOUT:-15}"
+
 start_pcscd() {
     command -v pcscd >/dev/null 2>&1 || return 0
     if pgrep -x pcscd >/dev/null 2>&1 || pidof pcscd >/dev/null 2>&1; then
@@ -1920,6 +1939,18 @@ start_pcscd() {
 
 parse_uid() {
     awk '
+        /^nq-nfc-poll: uid=/ {
+            sub(/^nq-nfc-poll: uid=/, "")
+            gsub(/[^0-9A-Fa-f]/, "")
+            print tolower($0)
+            exit
+        }
+        /^nq-nfc-poll: iso15693_uid=/ {
+            sub(/^nq-nfc-poll: iso15693_uid=/, "")
+            gsub(/[^0-9A-Fa-f]/, "")
+            print tolower($0)
+            exit
+        }
         /UID \\(NFCID1\\):/ {
             for (i = 1; i <= NF; i++) {
                 if ($i ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
@@ -1932,21 +1963,109 @@ parse_uid() {
     '
 }
 
-if ! command -v nfc-poll >/dev/null 2>&1; then
-    echo "nq-nfc-scan: nfc-poll is not installed" >&2
-    exit 1
-fi
+kernel_available() {
+    command -v nq-nfc-poll >/dev/null 2>&1 || return 1
+    ls /sys/class/nfc/nfc* >/dev/null 2>&1
+}
 
-start_pcscd
-out="$(nfc-poll 2>&1)"
-rc="$?"
-printf '%s\\n' "$out"
-uid="$(printf '%s\\n' "$out" | parse_uid)"
+scan_kernel() {
+    out="$(nq-nfc-poll --timeout "$timeout" 2>&1)"
+    rc="$?"
+    [ "$uid_only" = "1" ] || printf '%s\\n' "$out"
+    uid="$(printf '%s\\n' "$out" | parse_uid)"
+    if [ -n "$uid" ]; then
+        if [ "$uid_only" = "1" ]; then
+            printf '%s\\n' "$uid"
+        else
+            echo "nq-nfc-scan: uid=$uid"
+        fi
+        exit 0
+    fi
+    return "$rc"
+}
 
-if [ -n "$uid" ]; then
-    echo "nq-nfc-scan: uid=$uid"
-    exit 0
-fi
+scan_libnfc() {
+    if ! command -v nfc-poll >/dev/null 2>&1; then
+        echo "nq-nfc-scan: nfc-poll is not installed" >&2
+        return 1
+    fi
+
+    start_pcscd
+    out="$(nfc-poll 2>&1)"
+    rc="$?"
+    [ "$uid_only" = "1" ] || printf '%s\\n' "$out"
+    uid="$(printf '%s\\n' "$out" | parse_uid)"
+    if [ -n "$uid" ]; then
+        if [ "$uid_only" = "1" ]; then
+            printf '%s\\n' "$uid"
+        else
+            echo "nq-nfc-scan: uid=$uid"
+        fi
+        exit 0
+    fi
+    return "$rc"
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --uid-only)
+            uid_only=1
+            shift
+            ;;
+        --backend)
+            [ "$#" -ge 2 ] || {
+                echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+                exit 2
+            }
+            backend="$2"
+            shift 2
+            ;;
+        --timeout)
+            [ "$#" -ge 2 ] || {
+                echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+                exit 2
+            }
+            timeout="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]"
+            exit 0
+            ;;
+        *)
+            echo "usage: nq-nfc-scan [--uid-only] [--backend auto|kernel|libnfc] [--timeout seconds]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+case "$backend" in
+    auto)
+        if kernel_available; then
+            scan_kernel
+            rc="$?"
+        else
+            scan_libnfc
+            rc="$?"
+        fi
+        ;;
+    kernel)
+        if ! kernel_available; then
+            echo "nq-nfc-scan: kernel NFC device or nq-nfc-poll is missing" >&2
+            exit 1
+        fi
+        scan_kernel
+        rc="$?"
+        ;;
+    libnfc)
+        scan_libnfc
+        rc="$?"
+        ;;
+    *)
+        echo "nq-nfc-scan: invalid backend: $backend" >&2
+        exit 2
+        ;;
+esac
 
 echo "nq-nfc-scan: no ISO14443A UID found" >&2
 exit "$rc"
@@ -1981,29 +2100,6 @@ pid_now() {
     date +%s 2>/dev/null || echo 0
 }
 
-start_pcscd() {
-    command -v pcscd >/dev/null 2>&1 || return 0
-    if pgrep -x pcscd >/dev/null 2>&1 || pidof pcscd >/dev/null 2>&1; then
-        return 0
-    fi
-    pcscd >/dev/null 2>&1 || true
-    sleep 1
-}
-
-parse_uid() {
-    awk '
-        /UID \\(NFCID1\\):/ {
-            for (i = 1; i <= NF; i++) {
-                if ($i ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
-                    printf "%s", tolower($i)
-                }
-            }
-            printf "\\n"
-            exit
-        }
-    '
-}
-
 station_for_uid() {
     uid="$1"
     [ -r "$NQ_NFC_TAGS" ] || return 1
@@ -2026,12 +2122,11 @@ if [ "$NQ_NFC_JUKEBOX_ENABLE" != "1" ]; then
     exit 0
 fi
 
-if ! command -v nfc-poll >/dev/null 2>&1; then
-    log "nfc-poll is not installed"
+if ! command -v nq-nfc-scan >/dev/null 2>&1; then
+    log "nq-nfc-scan is not installed"
     exit 1
 fi
 
-start_pcscd
 log "watching for NFC tags"
 [ -r "$NQ_NFC_TAGS" ] || log "tag map missing: $NQ_NFC_TAGS"
 
@@ -2039,10 +2134,10 @@ last_uid=
 last_time=0
 
 while true; do
-    out="$(nfc-poll 2>&1)"
+    out="$(nq-nfc-scan --uid-only 2>&1)"
     rc="$?"
     [ "$NQ_NFC_DEBUG" = "1" ] && printf '%s\\n' "$out"
-    uid="$(printf '%s\\n' "$out" | parse_uid)"
+    uid="$(printf '%s\\n' "$out" | awk '/^[0-9a-f]+$/ { print; exit }')"
     now="$(pid_now)"
 
     if [ -z "$uid" ]; then
@@ -2143,8 +2238,8 @@ else
     stop_old
 fi
 
-if ! command -v nfc-poll >/dev/null 2>&1; then
-    echo "[nq-nfc-jukebox] nfc-poll command missing"
+if ! command -v nq-nfc-scan >/dev/null 2>&1; then
+    echo "[nq-nfc-jukebox] nq-nfc-scan command missing"
     exit 1
 fi
 
@@ -2177,10 +2272,25 @@ else
     echo "squeezelite: missing"
 fi
 
-if command -v nfc-poll >/dev/null 2>&1; then
-    echo "nfc: libnfc tools installed"
+if ls /sys/class/nfc/nfc* >/dev/null 2>&1; then
+    for dev in /sys/class/nfc/nfc*; do
+        [ -e "$dev" ] || continue
+        echo "nfc: kernel device $(basename "$dev") present"
+    done
 else
-    echo "nfc: libnfc tools missing"
+    echo "nfc: kernel device missing"
+fi
+
+if command -v nq-nfc-poll >/dev/null 2>&1; then
+    echo "nfc: kernel poller installed"
+else
+    echo "nfc: kernel poller missing"
+fi
+
+if command -v nfc-poll >/dev/null 2>&1; then
+    echo "nfc: external-reader libnfc tools installed"
+else
+    echo "nfc: external-reader libnfc tools missing"
 fi
 
 if [ -s /etc/nexusq/squeezelite.env ]; then
@@ -2522,6 +2632,7 @@ Runtime-only test files in /run/nexusq override these persistent files.
         (root / "artifacts/bin/nq-adbd-lite", rootfs / "usr/sbin/nq-adbd-lite"),
         (root / "artifacts/bin/nq-avr-i2c", rootfs / "usr/sbin/nq-avr-i2c"),
         (root / "artifacts/bin/nq-led-visualizer", rootfs / "usr/sbin/nq-led-visualizer"),
+        (root / "artifacts/bin/nq-nfc-poll", rootfs / "usr/bin/nq-nfc-poll"),
         (root / "build/seed-rng-arm", rootfs / "sbin/seed-rng"),
     ):
         if src.exists():
