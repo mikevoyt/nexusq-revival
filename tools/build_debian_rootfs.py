@@ -1650,6 +1650,8 @@ done
 : "${NQ_LED_VISUALIZER_SWIRL_MIN_MS:=10000}"
 : "${NQ_LED_VISUALIZER_SWIRL_MAX_MS:=15000}"
 : "${NQ_LED_VISUALIZER_SWIRL_DURATION_MS:=2200}"
+: "${NQ_LED_VISUALIZER_POWER_LED:=1}"
+: "${NQ_LED_VISUALIZER_POWER_LED_BRIGHTNESS:=255}"
 : "${NQ_LED_VISUALIZER_SYNC_DELAY_MS:=220}"
 : "${NQ_LED_VISUALIZER_SYNC_DELAY_FILE:=/run/nexusq-led-sync-delay-ms}"
 
@@ -1704,6 +1706,8 @@ set -- /usr/sbin/nq-led-visualizer \\
     --swirl-min-ms "$NQ_LED_VISUALIZER_SWIRL_MIN_MS" \\
     --swirl-max-ms "$NQ_LED_VISUALIZER_SWIRL_MAX_MS" \\
     --swirl-duration-ms "$NQ_LED_VISUALIZER_SWIRL_DURATION_MS" \\
+    --power-led "$NQ_LED_VISUALIZER_POWER_LED" \\
+    --power-led-brightness "$NQ_LED_VISUALIZER_POWER_LED_BRIGHTNESS" \\
     --sync-delay-ms "$NQ_LED_VISUALIZER_SYNC_DELAY_MS" \\
     --sync-delay-file "$NQ_LED_VISUALIZER_SYNC_DELAY_FILE"
 

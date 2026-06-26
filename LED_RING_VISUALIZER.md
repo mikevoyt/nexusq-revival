@@ -48,6 +48,8 @@ nq-led-visualizer --info
 nq-led-visualizer --all 8 0 0
 nq-led-visualizer --all 0 8 0
 nq-led-visualizer --all 0 0 8
+nq-led-visualizer --power-led-color 0 0 64
+nq-led-visualizer --power-led-color 0 0 0
 nq-led-visualizer --sweep --brightness 16
 nq-led-visualizer --off
 ```
@@ -72,6 +74,11 @@ low-frequency energy, and layers independently rotating color bands for bass,
 midrange, and upper-frequency accents. Those bands slowly pick new clockwise or
 counterclockwise drift speeds while the palette and texture blends continue to
 evolve. A simpler `spectrum` style is also available for experiments.
+
+The small top power LED is also controlled by the front-panel AVR. The legacy
+ABI names this `AVR_LED_SET_MUTE`; in appliance mode the visualizer uses that
+register as a playback-active status light. By default it cycles through a
+rainbow while audio is active and turns off when playback stops.
 
 ## Audio Sync
 
@@ -126,6 +133,8 @@ NQ_LED_VISUALIZER_SWIRL=1
 NQ_LED_VISUALIZER_SWIRL_MIN_MS=10000
 NQ_LED_VISUALIZER_SWIRL_MAX_MS=15000
 NQ_LED_VISUALIZER_SWIRL_DURATION_MS=2200
+NQ_LED_VISUALIZER_POWER_LED=1
+NQ_LED_VISUALIZER_POWER_LED_BRIGHTNESS=255
 NQ_LED_VISUALIZER_SYNC_DELAY_MS=220
 EOF
 ```
@@ -147,6 +156,10 @@ stale. Set `NQ_LED_VISUALIZER_SOURCE=squeezelite` to force that legacy path.
 With the pulse style, `NQ_LED_VISUALIZER_SWIRL=1` adds an occasional rotating
 trail over the music-reactive frame. The default interval is randomized between
 10 and 15 seconds while playback is active, with each swirl lasting 2.2 seconds.
+
+`NQ_LED_VISUALIZER_POWER_LED=1` enables the top-LED rainbow status indicator.
+Set `NQ_LED_VISUALIZER_POWER_LED_BRIGHTNESS` from `0` to `255` to tune how
+visible it is relative to the main ring.
 
 When Squeezelite is enabled, `/sbin/nq-start-squeezelite` automatically adds
 Squeezelite's `-v` flag unless `NQ_SQUEEZELITE_VISUALIZER` overrides it.
@@ -179,6 +192,8 @@ Validated on real Nexus Q hardware:
   hardware revision `1`, and `32` LEDs
 - low-brightness `--all` and `--sweep` commands complete through the kernel
   misc device
+- `--power-led-color R G B` controls the small top LED through the
+  `AVR_LED_SET_MUTE` ioctl
 - SomaFM playback through `nq-play` creates `/run/nexusq-audio-levels`, and
   `nq-led-visualizer --levels /run/nexusq-audio-levels` stays running while
   driving the ring
