@@ -36,6 +36,8 @@
 #define DEFAULT_SWIRL_MIN_MS 10000
 #define DEFAULT_SWIRL_MAX_MS 15000
 #define DEFAULT_SWIRL_DURATION_MS 2200
+#define DEFAULT_POWER_LED_ENABLE 1
+#define DEFAULT_POWER_LED_BRIGHTNESS 255
 #define DEFAULT_SYNC_STATE_FILE "/run/nexusq-led-visualizer-state"
 #define DEFAULT_SYNC_DELAY_FILE "/run/nexusq-led-sync-delay-ms"
 #define LEVEL_DELAY_QUEUE 128
@@ -50,6 +52,7 @@
 #define TRACK_MIN_RANGE 192
 #define TRACK_HISTORY 48
 #define ANIM_PHASE_SCALE 1024
+#define POWER_LED_HUE_MS 45
 
 #define AVR_LED_MODE_HOST_AUTO_COMMIT 0x01
 
@@ -84,6 +87,7 @@ enum command {
 	CMD_INFO,
 	CMD_OFF,
 	CMD_ALL,
+	CMD_POWER_LED,
 	CMD_SWEEP,
 };
 
@@ -106,9 +110,12 @@ struct options {
 	int swirl_min_ms;
 	int swirl_max_ms;
 	int swirl_duration_ms;
+	int power_led_enable;
+	int power_led_brightness;
 	int sync_delay_ms;
 	const char *sync_delay_file;
 	uint8_t all_rgb[3];
+	uint8_t power_led_rgb[3];
 };
 
 struct vis_reader {
@@ -181,10 +188,13 @@ struct visualizer_state {
 	uint32_t rng;
 	uint32_t last_level_seq;
 	uint32_t last_sync_state_seq;
+	uint8_t power_led_rgb[RGB_CHANNELS];
 	bool palette_ready;
 	bool texture_ready;
 	bool animation_ready;
 	bool swirl_ready;
+	bool power_led_ready;
+	bool power_led_failed;
 	bool frame_smooth_valid;
 	struct avr_led_rgb_vals smooth_frame[MAX_LEDS];
 };
@@ -206,12 +216,14 @@ static void usage(const char *argv0)
 		"     [--gain N] [--style spectrum|pulse]\n"
 		"     [--swirl 0|1] [--swirl-min-ms N] [--swirl-max-ms N]\n"
 		"     [--swirl-duration-ms N]\n"
+		"     [--power-led 0|1] [--power-led-brightness 0..255]\n"
 		"     [--sync-delay-ms N] [--sync-delay-file PATH]\n"
 		"  %s --info [--device /dev/leds]\n"
 		"  %s --off [--device /dev/leds]\n"
 		"  %s --all R G B [--device /dev/leds]\n"
+		"  %s --power-led-color R G B [--device /dev/leds]\n"
 		"  %s --sweep [--device /dev/leds] [--brightness 0..255]\n",
-		argv0, argv0, argv0, argv0, argv0);
+		argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 static int parse_int(const char *s, int min, int max, int *out)
@@ -301,6 +313,19 @@ static int led_set_all(int fd, uint8_t r, uint8_t g, uint8_t b)
 
 	if (ioctl(fd, AVR_LED_SET_ALL_VALS, &rgb) < 0) {
 		fprintf(stderr, "AVR_LED_SET_ALL_VALS failed: %s\n",
+			strerror(errno));
+		return -1;
+	}
+
+	return 0;
+}
+
+static int led_set_mute(int fd, uint8_t r, uint8_t g, uint8_t b)
+{
+	struct avr_led_rgb_vals rgb = { .rgb = { r, g, b } };
+
+	if (ioctl(fd, AVR_LED_SET_MUTE, &rgb) < 0) {
+		fprintf(stderr, "AVR_LED_SET_MUTE failed: %s\n",
 			strerror(errno));
 		return -1;
 	}
@@ -1710,6 +1735,36 @@ static void render_spectrum_frame(struct avr_led_rgb_vals *frame, int count,
 	}
 }
 
+static void update_power_led(int fd, const struct options *opts,
+			     struct visualizer_state *state, bool active)
+{
+	struct avr_led_rgb_vals rgb = { .rgb = { 0, 0, 0 } };
+	long long now_ms;
+
+	if (!opts->power_led_enable || state->power_led_failed)
+		return;
+
+	if (active) {
+		now_ms = monotonic_ms();
+		rgb = scale_color((uint8_t)((now_ms / POWER_LED_HUE_MS) &
+					    0xff),
+				  opts->power_led_brightness);
+	}
+
+	if (state->power_led_ready &&
+	    memcmp(state->power_led_rgb, rgb.rgb,
+		   sizeof(state->power_led_rgb)) == 0)
+		return;
+
+	if (led_set_mute(fd, rgb.rgb[0], rgb.rgb[1], rgb.rgb[2]) < 0) {
+		state->power_led_failed = true;
+		return;
+	}
+
+	memcpy(state->power_led_rgb, rgb.rgb, sizeof(state->power_led_rgb));
+	state->power_led_ready = true;
+}
+
 static int run_visualizer(int fd, const struct options *opts)
 {
 	struct avr_led_rgb_vals frame[MAX_LEDS];
@@ -1782,6 +1837,7 @@ static int run_visualizer(int fd, const struct options *opts)
 		smooth_rgb_frame(&state, frame, count);
 		if (led_set_range(fd, 0, (uint8_t)count, frame) < 0)
 			break;
+		update_power_led(fd, opts, &state, active);
 		if (levels.running && levels.updated &&
 		    levels.updated != state.last_sync_state_seq) {
 			write_sync_state(&levels, monotonic_ms(), active,
@@ -1794,6 +1850,8 @@ static int run_visualizer(int fd, const struct options *opts)
 	}
 
 	vis_close(&vis);
+	if (opts->power_led_enable && !state.power_led_failed)
+		led_set_mute(fd, 0, 0, 0);
 	led_set_all(fd, 0, 0, 0);
 	return 0;
 }
@@ -1813,6 +1871,8 @@ static int parse_args(int argc, char **argv, struct options *opts)
 	opts->swirl_min_ms = DEFAULT_SWIRL_MIN_MS;
 	opts->swirl_max_ms = DEFAULT_SWIRL_MAX_MS;
 	opts->swirl_duration_ms = DEFAULT_SWIRL_DURATION_MS;
+	opts->power_led_enable = DEFAULT_POWER_LED_ENABLE;
+	opts->power_led_brightness = DEFAULT_POWER_LED_BRIGHTNESS;
 	opts->sync_delay_ms = 0;
 	opts->sync_delay_file = DEFAULT_SYNC_DELAY_FILE;
 
@@ -1859,6 +1919,16 @@ static int parse_args(int argc, char **argv, struct options *opts)
 			if (parse_int(argv[++i], 100, 10000,
 				      &opts->swirl_duration_ms) < 0)
 				return -1;
+		} else if (strcmp(argv[i], "--power-led") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 1,
+				      &opts->power_led_enable) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--power-led-brightness") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 255,
+				      &opts->power_led_brightness) < 0)
+				return -1;
 		} else if (strcmp(argv[i], "--sync-delay-ms") == 0 &&
 			   i + 1 < argc) {
 			if (parse_int(argv[++i], 0, 2000,
@@ -1889,6 +1959,16 @@ static int parse_args(int argc, char **argv, struct options *opts)
 			if (parse_u8_arg(argv[++i], &opts->all_rgb[0]) < 0 ||
 			    parse_u8_arg(argv[++i], &opts->all_rgb[1]) < 0 ||
 			    parse_u8_arg(argv[++i], &opts->all_rgb[2]) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--power-led-color") == 0 &&
+			   i + 3 < argc) {
+			opts->command = CMD_POWER_LED;
+			if (parse_u8_arg(argv[++i], &opts->power_led_rgb[0]) <
+			    0 ||
+			    parse_u8_arg(argv[++i], &opts->power_led_rgb[1]) <
+			    0 ||
+			    parse_u8_arg(argv[++i], &opts->power_led_rgb[2]) <
+			    0)
 				return -1;
 		} else if (strcmp(argv[i], "-h") == 0 ||
 			   strcmp(argv[i], "--help") == 0) {
@@ -1932,6 +2012,8 @@ int main(int argc, char **argv)
 	case CMD_OFF:
 		led_set_mode(fd, AVR_LED_MODE_HOST_AUTO_COMMIT);
 		ret = led_set_all(fd, 0, 0, 0) < 0 ? 1 : 0;
+		if (led_set_mute(fd, 0, 0, 0) < 0)
+			ret = 1;
 		break;
 	case CMD_ALL:
 		if (led_set_mode(fd, AVR_LED_MODE_HOST_AUTO_COMMIT) < 0)
@@ -1939,6 +2021,11 @@ int main(int argc, char **argv)
 		else
 			ret = led_set_all(fd, opts.all_rgb[0], opts.all_rgb[1],
 					  opts.all_rgb[2]) < 0 ? 1 : 0;
+		break;
+	case CMD_POWER_LED:
+		ret = led_set_mute(fd, opts.power_led_rgb[0],
+				   opts.power_led_rgb[1],
+				   opts.power_led_rgb[2]) < 0 ? 1 : 0;
 		break;
 	case CMD_SWEEP:
 		ret = run_sweep(fd, opts.brightness);
