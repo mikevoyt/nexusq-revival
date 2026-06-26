@@ -1646,6 +1646,8 @@ done
 : "${NQ_LED_VISUALIZER_IDLE_BRIGHTNESS:=6}"
 : "${NQ_LED_VISUALIZER_GAIN:=8}"
 : "${NQ_LED_VISUALIZER_STYLE:=pulse}"
+: "${NQ_LED_VISUALIZER_SYNC_DELAY_MS:=220}"
+: "${NQ_LED_VISUALIZER_SYNC_DELAY_FILE:=/run/nexusq-led-sync-delay-ms}"
 
 pid_live() {
     pid="$1"
@@ -1693,7 +1695,9 @@ set -- /usr/sbin/nq-led-visualizer \\
     --brightness "$NQ_LED_VISUALIZER_BRIGHTNESS" \\
     --idle-brightness "$NQ_LED_VISUALIZER_IDLE_BRIGHTNESS" \\
     --gain "$NQ_LED_VISUALIZER_GAIN" \\
-    --style "$NQ_LED_VISUALIZER_STYLE"
+    --style "$NQ_LED_VISUALIZER_STYLE" \\
+    --sync-delay-ms "$NQ_LED_VISUALIZER_SYNC_DELAY_MS" \\
+    --sync-delay-file "$NQ_LED_VISUALIZER_SYNC_DELAY_FILE"
 
 case "$NQ_LED_VISUALIZER_SOURCE" in
     levels|somafm)
@@ -1899,6 +1903,13 @@ fi
 : "${NQ_PLAY_VISUALIZER_ENABLE:=0}"
 : "${NQ_PLAY_LEVELS:=/run/nexusq-audio-levels}"
 : "${NQ_PLAY_LEVEL_UPDATE_MS:=16}"
+: "${NQ_PLAY_AUDIO_DELAY_MS:=0}"
+: "${NQ_PLAY_STARTUP_MUTE_MS:=0}"
+: "${NQ_PLAY_STARTUP_FADE_MS:=0}"
+: "${NQ_PLAY_CHIME_TRIGGER:=}"
+: "${NQ_PLAY_CHIME_MS:=550}"
+: "${NQ_PLAY_CHIME_GAIN:=900}"
+: "${NQ_PLAY_CHIME_DUCK_PERCENT:=30}"
 : "${NQ_PLAY_APLAY_BUFFER_TIME_US:=80000}"
 : "${NQ_PLAY_APLAY_PERIOD_TIME_US:=20000}"
 
@@ -1947,7 +1958,16 @@ if [ "$NQ_PLAY_VISUALIZER_ENABLE" = "1" ] &&
         "$@" |
     nq-pcm-level-tap \\
         --levels "$NQ_PLAY_LEVELS" \\
-        --update-ms "$NQ_PLAY_LEVEL_UPDATE_MS" |
+        --update-ms "$NQ_PLAY_LEVEL_UPDATE_MS" \\
+        --rate "$NQ_PLAY_RATE" \\
+        --channels "$NQ_PLAY_CHANNELS" \\
+        --audio-delay-ms "$NQ_PLAY_AUDIO_DELAY_MS" \\
+        --startup-mute-ms "$NQ_PLAY_STARTUP_MUTE_MS" \\
+        --startup-fade-ms "$NQ_PLAY_STARTUP_FADE_MS" \\
+        --chime-trigger "$NQ_PLAY_CHIME_TRIGGER" \\
+        --chime-ms "$NQ_PLAY_CHIME_MS" \\
+        --chime-gain "$NQ_PLAY_CHIME_GAIN" \\
+        --chime-duck-percent "$NQ_PLAY_CHIME_DUCK_PERCENT" |
     aplay \\
         -q \\
         -D "$NQ_PLAY_OUTPUT" \\
@@ -1970,6 +1990,160 @@ exec mpg123 \\
     --buffer "$NQ_PLAY_BUFFER" \\
     --preload "$NQ_PLAY_PRELOAD" \\
     "$@"
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "usr/bin/nq-visualizer-sync-test",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-sync-test.log
+LED_DELAY_FILE=/run/nexusq-led-sync-delay-ms
+
+usage() {
+    cat >&2 <<'EOF'
+usage:
+  nq-visualizer-sync-test [LED_DELAY_MS...]
+  nq-visualizer-sync-test --sweep
+
+Play metronome-like PCM pulse trains through the normal visualizer tap path.
+Watch whether the LED pulse is before or after the audible pip, then tune the
+delay. Higher LED_DELAY_MS makes the LED pulse later relative to audio.
+EOF
+}
+
+: "${NQ_SYNC_RATE:=48000}"
+: "${NQ_SYNC_CHANNELS:=2}"
+: "${NQ_SYNC_OUTPUT:=hw:0,0}"
+: "${NQ_SYNC_LEVELS:=/run/nexusq-audio-levels}"
+: "${NQ_SYNC_UPDATE_MS:=10}"
+: "${NQ_SYNC_BEATS:=12}"
+: "${NQ_SYNC_INTERVAL_MS:=800}"
+: "${NQ_SYNC_TONE_MS:=70}"
+: "${NQ_SYNC_FREQ:=880}"
+: "${NQ_SYNC_AMPLITUDE:=9000}"
+: "${NQ_SYNC_LEADIN_MS:=600}"
+: "${NQ_SYNC_APLAY_BUFFER_TIME_US:=80000}"
+: "${NQ_SYNC_APLAY_PERIOD_TIME_US:=20000}"
+: "${NQ_SYNC_AUDIO_DELAY_MS:=0}"
+: "${NQ_SYNC_DEFAULT_LED_DELAY_MS:=220}"
+: "${NQ_SYNC_SWEEP_DELAYS:=0 40 80 120 160}"
+: "${NQ_SYNC_STOP_PLAYER:=1}"
+
+stamp() {
+    awk '{ print $1; exit }' /proc/uptime 2>/dev/null || date +%s 2>/dev/null || echo 0
+}
+
+log() {
+    mkdir -p /run /run/nexusq
+    echo "[nq-sync-test] t=$(stamp) $*" | tee -a "$LOG"
+}
+
+is_delay() {
+    case "${1:-}" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -le 2000 ] 2>/dev/null
+}
+
+stop_player() {
+    [ "$NQ_SYNC_STOP_PLAYER" = "1" ] || return 0
+    command -v nq-somafm-play >/dev/null 2>&1 && nq-somafm-play --stop >/dev/null 2>&1 || true
+    for name in mpg123 nq-pcm-level-tap aplay; do
+        pids="$(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true)"
+        [ -z "$pids" ] || kill $pids 2>/dev/null || true
+    done
+    sleep 0.25 2>/dev/null || true
+}
+
+ensure_ready() {
+    if ! command -v nq-pcm-sync-pulse >/dev/null 2>&1; then
+        echo "nq-visualizer-sync-test: nq-pcm-sync-pulse missing" >&2
+        exit 1
+    fi
+    if ! command -v nq-pcm-level-tap >/dev/null 2>&1; then
+        echo "nq-visualizer-sync-test: nq-pcm-level-tap missing" >&2
+        exit 1
+    fi
+    if ! command -v aplay >/dev/null 2>&1; then
+        echo "nq-visualizer-sync-test: aplay missing" >&2
+        exit 1
+    fi
+    if command -v nq-start-led-visualizer >/dev/null 2>&1; then
+        nq-start-led-visualizer >/dev/null 2>&1 || true
+    fi
+}
+
+run_led_delay() {
+    led_delay="$1"
+
+    is_delay "$led_delay" || {
+        echo "nq-visualizer-sync-test: invalid LED delay: $led_delay" >&2
+        exit 2
+    }
+    is_delay "$NQ_SYNC_AUDIO_DELAY_MS" || {
+        echo "nq-visualizer-sync-test: invalid audio delay: $NQ_SYNC_AUDIO_DELAY_MS" >&2
+        exit 2
+    }
+
+    echo "$led_delay" >"$LED_DELAY_FILE" 2>/dev/null || true
+    log "led_delay_ms=$led_delay audio_delay_ms=$NQ_SYNC_AUDIO_DELAY_MS beats=$NQ_SYNC_BEATS interval_ms=$NQ_SYNC_INTERVAL_MS tone_ms=$NQ_SYNC_TONE_MS"
+    nq-pcm-sync-pulse \\
+        --rate "$NQ_SYNC_RATE" \\
+        --channels "$NQ_SYNC_CHANNELS" \\
+        --beats "$NQ_SYNC_BEATS" \\
+        --interval-ms "$NQ_SYNC_INTERVAL_MS" \\
+        --tone-ms "$NQ_SYNC_TONE_MS" \\
+        --freq "$NQ_SYNC_FREQ" \\
+        --amplitude "$NQ_SYNC_AMPLITUDE" \\
+        --leadin-ms "$NQ_SYNC_LEADIN_MS" |
+    nq-pcm-level-tap \\
+        --levels "$NQ_SYNC_LEVELS" \\
+        --update-ms "$NQ_SYNC_UPDATE_MS" \\
+        --rate "$NQ_SYNC_RATE" \\
+        --channels "$NQ_SYNC_CHANNELS" \\
+        --audio-delay-ms "$NQ_SYNC_AUDIO_DELAY_MS" |
+    aplay \\
+        -q \\
+        -D "$NQ_SYNC_OUTPUT" \\
+        -f S16_LE \\
+        -r "$NQ_SYNC_RATE" \\
+        -c "$NQ_SYNC_CHANNELS" \\
+        --buffer-time="$NQ_SYNC_APLAY_BUFFER_TIME_US" \\
+        --period-time="$NQ_SYNC_APLAY_PERIOD_TIME_US"
+    rc="$?"
+    log "led_delay_ms=$led_delay done rc=$rc"
+    return "$rc"
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    --sweep)
+        shift
+        [ "$#" -eq 0 ] || {
+            usage
+            exit 2
+        }
+        set -- $NQ_SYNC_SWEEP_DELAYS
+        ;;
+    "")
+        set -- "$NQ_SYNC_DEFAULT_LED_DELAY_MS"
+        ;;
+esac
+
+ensure_ready
+stop_player
+
+for led_delay in "$@"; do
+    run_led_delay "$led_delay" || exit "$?"
+    sleep 1 2>/dev/null || true
+done
 """,
         0o755,
     )
@@ -2202,13 +2376,25 @@ done
 : "${NQ_SOMAFM_VISUALIZER_ENABLE:=1}"
 : "${NQ_SOMAFM_VISUALIZER_LEVELS:=/run/nexusq-audio-levels}"
 : "${NQ_SOMAFM_VISUALIZER_UPDATE_MS:=16}"
+: "${NQ_SOMAFM_AUDIO_DELAY_MS:=0}"
 : "${NQ_SOMAFM_APLAY_BUFFER_TIME_US:=80000}"
 : "${NQ_SOMAFM_APLAY_PERIOD_TIME_US:=20000}"
+: "${NQ_SOMAFM_STARTUP_MUTE:=1}"
+: "${NQ_SOMAFM_STARTUP_MUTE_MS:=350}"
+: "${NQ_SOMAFM_STARTUP_FADE_MS:=200}"
+: "${NQ_SOMAFM_CHIME_TRIGGER:=/run/nexusq-audio-chime}"
+: "${NQ_SOMAFM_CHIME_MS:=550}"
+: "${NQ_SOMAFM_CHIME_GAIN:=900}"
+: "${NQ_SOMAFM_CHIME_DUCK_PERCENT:=30}"
 : "${NQ_SOMAFM_JUKEBOX_STREAM:=0}"
 : "${NQ_SOMAFM_JUKEBOX_URL:=}"
 : "${NQ_SOMAFM_SELECT_PREFIX:=}"
 : "${NQ_SOMAFM_SELECT_SUFFIX:=}"
 : "${NQ_SOMAFM_SELECT_TIMEOUT:=2}"
+
+if [ -n "${NQ_SOMAFM_OUTPUT_RELEASE_DELAY_OVERRIDE:-}" ]; then
+    NQ_SOMAFM_OUTPUT_RELEASE_DELAY="$NQ_SOMAFM_OUTPUT_RELEASE_DELAY_OVERRIDE"
+fi
 
 usage() {
     cat <<'EOF'
@@ -2416,6 +2602,11 @@ start_jukebox_stream_player() {
         export NQ_PLAY_VISUALIZER_ENABLE="$NQ_SOMAFM_VISUALIZER_ENABLE"
         export NQ_PLAY_LEVELS="$NQ_SOMAFM_VISUALIZER_LEVELS"
         export NQ_PLAY_LEVEL_UPDATE_MS="$NQ_SOMAFM_VISUALIZER_UPDATE_MS"
+        export NQ_PLAY_AUDIO_DELAY_MS="$NQ_SOMAFM_AUDIO_DELAY_MS"
+        export NQ_PLAY_CHIME_TRIGGER="$NQ_SOMAFM_CHIME_TRIGGER"
+        export NQ_PLAY_CHIME_MS="$NQ_SOMAFM_CHIME_MS"
+        export NQ_PLAY_CHIME_GAIN="$NQ_SOMAFM_CHIME_GAIN"
+        export NQ_PLAY_CHIME_DUCK_PERCENT="$NQ_SOMAFM_CHIME_DUCK_PERCENT"
         export NQ_PLAY_APLAY_BUFFER_TIME_US="$NQ_SOMAFM_APLAY_BUFFER_TIME_US"
         export NQ_PLAY_APLAY_PERIOD_TIME_US="$NQ_SOMAFM_APLAY_PERIOD_TIME_US"
         while :; do
@@ -2536,6 +2727,13 @@ timing "resolved station=$station"
 timing "stop players begin"
 stop_players
 timing "stop players done"
+play_startup_mute_ms=0
+play_startup_fade_ms=0
+if [ "$NQ_SOMAFM_STARTUP_MUTE" = "1" ] && [ "$NQ_SOMAFM_VISUALIZER_ENABLE" = "1" ]; then
+    play_startup_mute_ms="$NQ_SOMAFM_STARTUP_MUTE_MS"
+    play_startup_fade_ms="$NQ_SOMAFM_STARTUP_FADE_MS"
+    timing "startup pcm gate mute_ms=$play_startup_mute_ms fade_ms=$play_startup_fade_ms"
+fi
 {
     echo "[nq-somafm] station=$station"
     echo "[nq-somafm] url=$url"
@@ -2557,6 +2755,13 @@ timing "stop players done"
     export NQ_PLAY_VISUALIZER_ENABLE="$NQ_SOMAFM_VISUALIZER_ENABLE"
     export NQ_PLAY_LEVELS="$NQ_SOMAFM_VISUALIZER_LEVELS"
     export NQ_PLAY_LEVEL_UPDATE_MS="$NQ_SOMAFM_VISUALIZER_UPDATE_MS"
+    export NQ_PLAY_AUDIO_DELAY_MS="$NQ_SOMAFM_AUDIO_DELAY_MS"
+    export NQ_PLAY_STARTUP_MUTE_MS="$play_startup_mute_ms"
+    export NQ_PLAY_STARTUP_FADE_MS="$play_startup_fade_ms"
+    export NQ_PLAY_CHIME_TRIGGER="$NQ_SOMAFM_CHIME_TRIGGER"
+    export NQ_PLAY_CHIME_MS="$NQ_SOMAFM_CHIME_MS"
+    export NQ_PLAY_CHIME_GAIN="$NQ_SOMAFM_CHIME_GAIN"
+    export NQ_PLAY_CHIME_DUCK_PERCENT="$NQ_SOMAFM_CHIME_DUCK_PERCENT"
     export NQ_PLAY_APLAY_BUFFER_TIME_US="$NQ_SOMAFM_APLAY_BUFFER_TIME_US"
     export NQ_PLAY_APLAY_PERIOD_TIME_US="$NQ_SOMAFM_APLAY_PERIOD_TIME_US"
     if [ "$NQ_SOMAFM_RESTART" != "1" ]; then
@@ -3064,6 +3269,16 @@ done
 : "${NQ_NFC_ACK_OUTPUT:=hw:0,0}"
 : "${NQ_NFC_ACK_TIMEOUT:=1}"
 : "${NQ_NFC_ACK_STOP_PLAYER:=1}"
+: "${NQ_NFC_ACK_STOP_POLL_INTERVAL:=0.01}"
+: "${NQ_NFC_ACK_STOP_POLL_COUNT:=12}"
+: "${NQ_NFC_ACK_INBAND:=1}"
+: "${NQ_NFC_ACK_TRIGGER:=${NQ_SOMAFM_CHIME_TRIGGER:-/run/nexusq-audio-chime}}"
+: "${NQ_NFC_ACK_INBAND_HOLD:=0.60}"
+: "${NQ_NFC_ACK_INBAND_PRETRIGGERED:=0}"
+
+stamp() {
+    awk '{ print $1; exit }' /proc/uptime 2>/dev/null || date +%s 2>/dev/null || echo 0
+}
 
 pid_live() {
     pid="$1"
@@ -3082,6 +3297,107 @@ stop_pid_file() {
     rm -f "$pid_file"
 }
 
+wait_pids_gone() {
+    pids="$*"
+    count="$NQ_NFC_ACK_STOP_POLL_COUNT"
+    case "$count" in ""|*[!0-9]*) count=12 ;; esac
+
+    i=0
+    while [ "$i" -lt "$count" ] 2>/dev/null; do
+        still_live=
+        for pid in $pids; do
+            pid_live "$pid" && still_live=1
+        done
+        [ -n "$still_live" ] || return 0
+        sleep "$NQ_NFC_ACK_STOP_POLL_INTERVAL" 2>/dev/null || true
+        i=$((i + 1))
+    done
+    return 1
+}
+
+proc_children() {
+    pid="$1"
+    [ -r "/proc/$pid/task/$pid/children" ] || return 0
+    cat "/proc/$pid/task/$pid/children" 2>/dev/null || true
+}
+
+proc_name_pids() {
+    name="$1"
+    for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
+        pid_live "$pid" && printf '%s\\n' "$pid"
+    done
+}
+
+kill_audio_pids() {
+    pids="$*"
+    [ -n "$(printf '%s' "$pids" | tr -d '[:space:]')" ] || return 0
+    kill $pids 2>/dev/null || true
+    wait_pids_gone $pids || true
+    for pid in $pids; do
+        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+    wait_pids_gone $pids || true
+}
+
+collect_audio_pids() {
+    old_pid="$(cat /run/nq-somafm.pid 2>/dev/null || true)"
+    child_pids=
+    [ -z "$old_pid" ] || child_pids="$(cat /run/nq-somafm-player.pid 2>/dev/null || true) $(proc_children "$old_pid")"
+    printf '%s\\n' "$old_pid $child_pids $(proc_name_pids mpg123) $(proc_name_pids nq-pcm-level-tap) $(proc_name_pids aplay)"
+}
+
+stop_audio_pipeline() {
+    kill_audio_pids $(collect_audio_pids)
+    for _ in 1 2 3; do
+        sleep "$NQ_NFC_ACK_STOP_POLL_INTERVAL" 2>/dev/null || true
+        pids="$(proc_name_pids mpg123) $(proc_name_pids nq-pcm-level-tap) $(proc_name_pids aplay)"
+        [ -n "$(printf '%s' "$pids" | tr -d '[:space:]')" ] || break
+        kill_audio_pids $pids
+    done
+    rm -f /run/nq-somafm.pid /run/nq-somafm.mode /run/nq-somafm-player.pid
+}
+
+audio_pipeline_live() {
+    [ -n "$(proc_name_pids nq-pcm-level-tap)" ] || return 1
+    [ -n "$(proc_name_pids aplay)" ] || return 1
+    return 0
+}
+
+trigger_inband_ack() {
+    [ "$NQ_NFC_ACK_INBAND" = "1" ] || return 1
+    [ -n "$NQ_NFC_ACK_TRIGGER" ] || return 1
+    if [ "$NQ_NFC_ACK_INBAND_PRETRIGGERED" != "1" ]; then
+        dir="$(dirname "$NQ_NFC_ACK_TRIGGER")"
+        mkdir -p "$dir" 2>/dev/null || return 1
+        tmp="${NQ_NFC_ACK_TRIGGER}.tmp.$$"
+        printf '%s %s\\n' "$(stamp)" "$$" >"$tmp" 2>/dev/null || return 1
+        mv "$tmp" "$NQ_NFC_ACK_TRIGGER" 2>/dev/null || {
+            rm -f "$tmp" 2>/dev/null || true
+            return 1
+        }
+    fi
+    audio_pipeline_live || return 1
+    sleep "$NQ_NFC_ACK_INBAND_HOLD" 2>/dev/null || true
+    return 0
+}
+
+stop_player_tree() {
+    [ -s /run/nq-somafm.pid ] || return 1
+    old_pid="$(cat /run/nq-somafm.pid 2>/dev/null || true)"
+    [ -n "$old_pid" ] || return 1
+    child_pids="$(cat /run/nq-somafm-player.pid 2>/dev/null || true) $(proc_children "$old_pid")"
+    pids="$old_pid $child_pids"
+
+    kill $pids 2>/dev/null || true
+    wait_pids_gone $pids || true
+    for pid in $pids; do
+        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+    wait_pids_gone $pids || true
+    rm -f /run/nq-somafm.pid /run/nq-somafm.mode /run/nq-somafm-player.pid
+    return 0
+}
+
 stop_proc_name() {
     name="$1"
     live_pids=
@@ -3090,26 +3406,21 @@ stop_proc_name() {
         live_pids="$live_pids $pid"
     done
     [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        still_live=
-        for pid in $live_pids; do
-            pid_live "$pid" && still_live=1
-        done
-        [ -n "$still_live" ] || break
-        sleep 0.05 2>/dev/null || sleep 1
-    done
+    wait_pids_gone $live_pids || true
     for pid in $live_pids; do
         pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
     done
 }
 
 [ "$NQ_NFC_ACK_ENABLE" = "1" ] || exit 0
+if trigger_inband_ack; then
+    exit 0
+fi
 command -v aplay >/dev/null 2>&1 || exit 0
 [ -r "$NQ_NFC_ACK_WAV" ] || exit 0
 
 if [ "$NQ_NFC_ACK_STOP_PLAYER" = "1" ]; then
-    stop_pid_file /run/nq-somafm.pid
-    stop_proc_name mpg123
+    stop_audio_pipeline
 fi
 
 if command -v amixer >/dev/null 2>&1 && [ -n "$NQ_NFC_ACK_SPEAKER_SWITCH" ]; then
@@ -3149,6 +3460,9 @@ done
 : "${NQ_NFC_SCAN_RESTART_SLEEP:=1}"
 : "${NQ_NFC_DEBUG:=0}"
 : "${NQ_NFC_ACK_ENABLE:=1}"
+: "${NQ_NFC_ACK_INBAND:=1}"
+: "${NQ_NFC_ACK_TRIGGER:=${NQ_SOMAFM_CHIME_TRIGGER:-/run/nexusq-audio-chime}}"
+: "${NQ_NFC_AFTER_ACK_OUTPUT_RELEASE_DELAY:=0.05}"
 : "${NQ_NFC_TIMING:=1}"
 
 log() {
@@ -3182,6 +3496,21 @@ station_for_uid() {
             }
         }
     ' "$NQ_NFC_TAGS"
+}
+
+trigger_inband_ack() {
+    [ "$NQ_NFC_ACK_ENABLE" = "1" ] || return 1
+    [ "$NQ_NFC_ACK_INBAND" = "1" ] || return 1
+    [ -n "$NQ_NFC_ACK_TRIGGER" ] || return 1
+    dir="$(dirname "$NQ_NFC_ACK_TRIGGER")"
+    mkdir -p "$dir" 2>/dev/null || return 1
+    tmp="${NQ_NFC_ACK_TRIGGER}.tmp.$$"
+    printf '%s %s\\n' "$(stamp)" "$$" >"$tmp" 2>/dev/null || return 1
+    mv "$tmp" "$NQ_NFC_ACK_TRIGGER" 2>/dev/null || {
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    }
+    return 0
 }
 
 use_scan_loop() {
@@ -3240,13 +3569,45 @@ handle_uid() {
     fi
 
     log "tag uid=$uid station=$station"
+    ack_pretriggered=0
+    if trigger_inband_ack; then
+        ack_pretriggered=1
+        log "ack trigger uid=$uid station=$station"
+    fi
+    play_target="$station"
+    resolve_pid=
+    resolve_tmp=
+    if command -v nq-somafm-url >/dev/null 2>&1; then
+        resolve_tmp="/run/nq-nfc-resolve.$$"
+        rm -f "$resolve_tmp" "$resolve_tmp.err"
+        ( nq-somafm-url "$station" >"$resolve_tmp" 2>"$resolve_tmp.err" ) &
+        resolve_pid="$!"
+    fi
+    play_output_release_delay=
     if [ "$NQ_NFC_ACK_ENABLE" = "1" ] && command -v nq-nfc-ack >/dev/null 2>&1; then
         log "ack begin uid=$uid station=$station"
-        nq-nfc-ack || log "ack failed"
+        if NQ_NFC_ACK_INBAND_PRETRIGGERED="$ack_pretriggered" nq-nfc-ack; then
+            play_output_release_delay="$NQ_NFC_AFTER_ACK_OUTPUT_RELEASE_DELAY"
+        else
+            log "ack failed"
+        fi
         log "ack done uid=$uid station=$station"
     fi
+    if [ -n "$resolve_pid" ]; then
+        if wait "$resolve_pid" && [ -s "$resolve_tmp" ]; then
+            play_target="$(head -n 1 "$resolve_tmp")"
+            log "resolve done uid=$uid station=$station"
+        else
+            log "resolve failed uid=$uid station=$station"
+        fi
+        rm -f "$resolve_tmp" "$resolve_tmp.err"
+    fi
     log "play begin uid=$uid station=$station"
-    /usr/bin/nq-somafm-play "$station" || log "play failed for station=$station"
+    if [ -n "$play_output_release_delay" ]; then
+        NQ_SOMAFM_OUTPUT_RELEASE_DELAY_OVERRIDE="$play_output_release_delay" /usr/bin/nq-somafm-play "$play_target" || log "play failed for station=$station"
+    else
+        /usr/bin/nq-somafm-play "$play_target" || log "play failed for station=$station"
+    fi
     log "play done uid=$uid station=$station"
     last_uid="$uid"
     last_time="$now"
@@ -3788,6 +4149,7 @@ Runtime-only test files in /run/nexusq override these persistent files.
         (root / "artifacts/bin/nq-avr-i2c", rootfs / "usr/sbin/nq-avr-i2c"),
         (root / "artifacts/bin/nq-led-visualizer", rootfs / "usr/sbin/nq-led-visualizer"),
         (root / "artifacts/bin/nq-pcm-level-tap", rootfs / "usr/bin/nq-pcm-level-tap"),
+        (root / "artifacts/bin/nq-pcm-sync-pulse", rootfs / "usr/bin/nq-pcm-sync-pulse"),
         (root / "artifacts/bin/nq-nfc-poll", rootfs / "usr/bin/nq-nfc-poll"),
         (root / "build/seed-rng-arm", rootfs / "sbin/seed-rng"),
     ):

@@ -32,6 +32,9 @@
 #define DEFAULT_IDLE_BRIGHTNESS 6
 #define DEFAULT_GAIN 8
 #define DEFAULT_STYLE VIS_STYLE_PULSE
+#define DEFAULT_SYNC_STATE_FILE "/run/nexusq-led-visualizer-state"
+#define DEFAULT_SYNC_DELAY_FILE "/run/nexusq-led-sync-delay-ms"
+#define LEVEL_DELAY_QUEUE 128
 #define MAX_LEDS 64
 #define VIS_WINDOW_SAMPLES 2048
 #define VIS_EXPECTED_BUF_SIZE 16384U
@@ -95,6 +98,8 @@ struct options {
 	int brightness;
 	int idle_brightness;
 	int gain;
+	int sync_delay_ms;
+	const char *sync_delay_file;
 	uint8_t all_rgb[3];
 };
 
@@ -117,6 +122,24 @@ struct vis_levels {
 	int bands[VIS_BANDS];
 	bool running;
 	uint32_t updated;
+	long long source_updated_ms;
+	int audio_delay_ms;
+	long long estimated_audio_ms;
+};
+
+struct delayed_level_sample {
+	struct vis_levels levels;
+	long long due_ms;
+};
+
+struct level_delay_state {
+	struct delayed_level_sample queue[LEVEL_DELAY_QUEUE];
+	int head;
+	int count;
+	uint32_t last_seq;
+	int last_delay_ms;
+	struct vis_levels current;
+	bool have_current;
 };
 
 struct visualizer_state {
@@ -142,6 +165,7 @@ struct visualizer_state {
 	int animation_ticks;
 	uint32_t rng;
 	uint32_t last_level_seq;
+	uint32_t last_sync_state_seq;
 	bool palette_ready;
 	bool texture_ready;
 	bool animation_ready;
@@ -164,6 +188,7 @@ static void usage(const char *argv0)
 		"  %s [--device /dev/leds] [--levels PATH] [--shm PATH_OR_NAME] [--fps N]\n"
 		"     [--brightness 0..255] [--idle-brightness 0..255]\n"
 		"     [--gain N] [--style spectrum|pulse]\n"
+		"     [--sync-delay-ms N] [--sync-delay-file PATH]\n"
 		"  %s --info [--device /dev/leds]\n"
 		"  %s --off [--device /dev/leds]\n"
 		"  %s --all R G B [--device /dev/leds]\n"
@@ -624,16 +649,61 @@ static int parse_key_value_long(const char *line, const char *key, long *out)
 	return 0;
 }
 
+static int parse_key_value_ll(const char *line, const char *key, long long *out)
+{
+	size_t key_len = strlen(key);
+	char *end = NULL;
+	long long value;
+
+	if (strncmp(line, key, key_len) != 0 || line[key_len] != '=')
+		return -1;
+	errno = 0;
+	value = strtoll(line + key_len + 1, &end, 0);
+	if (errno || end == line + key_len + 1)
+		return -1;
+	*out = value;
+	return 0;
+}
+
+static int read_int_file(const char *path, int fallback, int min, int max)
+{
+	char data[32];
+	char *end = NULL;
+	long value;
+	ssize_t got;
+	int fd;
+
+	if (!path || !path[0])
+		return fallback;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return fallback;
+	got = read(fd, data, sizeof(data) - 1);
+	close(fd);
+	if (got <= 0)
+		return fallback;
+	data[got] = '\0';
+
+	errno = 0;
+	value = strtol(data, &end, 0);
+	if (errno || end == data)
+		return fallback;
+	return clamp_int((int)value, min, max);
+}
+
 static int read_level_file(const char *path, int gain,
 			   struct vis_levels *levels)
 {
 	char data[512];
 	char *line;
 	char *saveptr = NULL;
-	long updated_ms = -1;
+	long long updated_ms = -1;
+	long long estimated_audio_ms = -1;
 	long running = 0;
 	long overall = 0;
 	long bands[VIS_BANDS] = { 0, 0, 0 };
+	long audio_delay_ms = 0;
 	ssize_t got;
 	int fd;
 	int i;
@@ -654,9 +724,16 @@ static int read_level_file(const char *path, int gain,
 	for (line = strtok_r(data, "\n", &saveptr); line;
 	     line = strtok_r(NULL, "\n", &saveptr)) {
 		long value;
+		long long ll_value;
 
-		if (parse_key_value_long(line, "updated_ms", &value) == 0) {
-			updated_ms = value;
+		if (parse_key_value_ll(line, "updated_ms", &ll_value) == 0) {
+			updated_ms = ll_value;
+		} else if (parse_key_value_long(line, "audio_delay_ms",
+						&value) == 0) {
+			audio_delay_ms = value;
+		} else if (parse_key_value_ll(line, "estimated_audio_ms",
+					      &ll_value) == 0) {
+			estimated_audio_ms = ll_value;
 		} else if (parse_key_value_long(line, "running", &value) == 0) {
 			running = value;
 		} else if (parse_key_value_long(line, "overall", &value) == 0) {
@@ -680,10 +757,138 @@ static int read_level_file(const char *path, int gain,
 		return -1;
 
 	levels->running = true;
+	levels->source_updated_ms = updated_ms;
+	levels->audio_delay_ms = (int)audio_delay_ms;
+	levels->estimated_audio_ms = estimated_audio_ms >= 0 ?
+				     estimated_audio_ms :
+				     updated_ms + audio_delay_ms;
 	levels->overall = clamp_int((int)overall * gain, 0, 4096);
 	for (i = 0; i < VIS_BANDS; i++)
 		levels->bands[i] = clamp_int((int)bands[i] * gain, 0, 4096);
 	return 0;
+}
+
+static void level_delay_reset(struct level_delay_state *delay)
+{
+	memset(delay, 0, sizeof(*delay));
+}
+
+static void level_delay_push(struct level_delay_state *delay,
+			     const struct vis_levels *levels, int delay_ms)
+{
+	struct delayed_level_sample *sample;
+	int tail;
+
+	if (!levels->updated || levels->updated == delay->last_seq)
+		return;
+	if (delay->count >= LEVEL_DELAY_QUEUE) {
+		delay->head = (delay->head + 1) % LEVEL_DELAY_QUEUE;
+		delay->count--;
+	}
+
+	tail = (delay->head + delay->count) % LEVEL_DELAY_QUEUE;
+	sample = &delay->queue[tail];
+	sample->levels = *levels;
+	sample->due_ms = levels->estimated_audio_ms + delay_ms;
+	delay->count++;
+	delay->last_seq = levels->updated;
+}
+
+static int level_delay_pop_due(struct level_delay_state *delay,
+			       long long now_ms, struct vis_levels *levels)
+{
+	bool popped = false;
+
+	while (delay->count > 0 && delay->queue[delay->head].due_ms <= now_ms) {
+		delay->current = delay->queue[delay->head].levels;
+		delay->have_current = true;
+		delay->head = (delay->head + 1) % LEVEL_DELAY_QUEUE;
+		delay->count--;
+		popped = true;
+	}
+
+	if (popped || delay->have_current) {
+		*levels = delay->current;
+		return 0;
+	}
+
+	memset(levels, 0, sizeof(*levels));
+	return 0;
+}
+
+static int effective_sync_delay_ms(const struct options *opts)
+{
+	return read_int_file(opts->sync_delay_file, opts->sync_delay_ms, 0, 2000);
+}
+
+static void apply_level_sync_delay(struct level_delay_state *delay,
+				   const struct options *opts,
+				   struct vis_levels *levels)
+{
+	int delay_ms = effective_sync_delay_ms(opts);
+
+	if (delay_ms <= 0) {
+		if (delay->last_delay_ms != 0)
+			level_delay_reset(delay);
+		delay->last_delay_ms = 0;
+		return;
+	}
+
+	if (delay->last_delay_ms != delay_ms) {
+		level_delay_reset(delay);
+		delay->last_delay_ms = delay_ms;
+	}
+	level_delay_push(delay, levels, delay_ms);
+	level_delay_pop_due(delay, monotonic_ms(), levels);
+}
+
+static void write_sync_state(const struct vis_levels *levels,
+			     long long commit_ms, bool active, int sync_delay_ms)
+{
+	char tmp[256];
+	FILE *fp;
+	long long target_ms;
+
+	if (!levels->running || !levels->updated ||
+	    levels->source_updated_ms <= 0)
+		return;
+	target_ms = levels->estimated_audio_ms + sync_delay_ms;
+	if (snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", DEFAULT_SYNC_STATE_FILE,
+		     (long)getpid()) >= (int)sizeof(tmp))
+		return;
+
+	fp = fopen(tmp, "w");
+	if (!fp)
+		return;
+	fprintf(fp,
+		"version=1\n"
+		"source=levels\n"
+		"seq=%u\n"
+		"commit_ms=%lld\n"
+		"active=%d\n"
+		"source_updated_ms=%lld\n"
+		"audio_delay_ms=%d\n"
+		"sync_delay_ms=%d\n"
+		"estimated_audio_ms=%lld\n"
+		"target_led_ms=%lld\n"
+		"commit_minus_source_ms=%lld\n"
+		"commit_minus_estimated_audio_ms=%lld\n"
+		"commit_minus_target_ms=%lld\n"
+		"overall=%d\n"
+		"band0=%d\n"
+		"band1=%d\n"
+		"band2=%d\n",
+		levels->updated, commit_ms, active ? 1 : 0,
+		levels->source_updated_ms, levels->audio_delay_ms,
+		sync_delay_ms, levels->estimated_audio_ms, target_ms,
+		commit_ms - levels->source_updated_ms,
+		commit_ms - levels->estimated_audio_ms,
+		commit_ms - target_ms, levels->overall,
+		levels->bands[0], levels->bands[1], levels->bands[2]);
+	if (fclose(fp) == 0)
+		rename(tmp, DEFAULT_SYNC_STATE_FILE);
+	else
+		unlink(tmp);
 }
 
 static int smooth_toward(int current, int target, int rise_div, int fall_div)
@@ -826,8 +1031,8 @@ static void update_smoothed_levels(struct visualizer_state *state,
 	}
 
 	low_delta = state->instant_bands[0] - previous_low;
-	if (low_delta > 150 && state->instant_bands[0] > 320) {
-		int flash = clamp_int(low_delta * 2, 0, 1024);
+	if (low_delta > 105 && state->instant_bands[0] > 240) {
+		int flash = clamp_int(low_delta * 3, 0, 1024);
 
 		if (flash > state->beat_flash)
 			state->beat_flash = flash;
@@ -1171,23 +1376,23 @@ static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
 	update_texture(state, count, opts->fps);
 	update_animation(state, count, opts->fps);
 
-	pulse_raw = (state->instant_bands[0] * 4 +
-		     state->smooth_bands[0] +
+	pulse_raw = (state->instant_bands[0] * 6 +
+		     state->smooth_bands[0] * 2 +
 		     state->instant_overall +
-		     state->beat_flash * 3) / 9;
+		     state->beat_flash * 4) / 13;
 	body_raw = (state->instant_bands[1] * 3 +
 		    state->smooth_bands[1]) / 4;
 	sparkle_raw = (state->instant_bands[2] * 3 +
 		       state->smooth_bands[2]) / 4;
 
-	pulse = expand_level(clamp_int((pulse_raw - 170) * 1024 / 854,
+	pulse = expand_level(clamp_int((pulse_raw - 120) * 1024 / 904,
 				       0, 1024));
 	body = expand_level(clamp_int((body_raw - 240) * 1024 / 784,
 				      0, 1024));
 	sparkle = expand_level(clamp_int((sparkle_raw - 260) * 1024 / 764,
 					 0, 1024));
 
-	bass_width = count / 5;
+	bass_width = count / 4;
 	if (bass_width < 4)
 		bass_width = 4;
 	mid_width = count / 7;
@@ -1212,21 +1417,21 @@ static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
 		/* Bass stays full-ring; mids and highs add moving color bands. */
 		r = base +
 		    band_mix_channel(pulse, state->palette[0][0],
-				     bass_weight / 2, 760, 1024) +
+				     bass_weight, 860, 1024) +
 		    band_mix_channel(body, state->palette[1][0],
 				     mid_weight, 180, 1536) +
 		    band_mix_channel(sparkle, state->palette[2][0],
 				     high_weight, 80, 1024);
 		g = base +
 		    band_mix_channel(pulse, state->palette[0][1],
-				     bass_weight / 2, 760, 1024) +
+				     bass_weight, 860, 1024) +
 		    band_mix_channel(body, state->palette[1][1],
 				     mid_weight, 180, 1536) +
 		    band_mix_channel(sparkle, state->palette[2][1],
 				     high_weight, 80, 1024);
 		b = base +
 		    band_mix_channel(pulse, state->palette[0][2],
-				     bass_weight / 2, 760, 1024) +
+				     bass_weight, 860, 1024) +
 		    band_mix_channel(body, state->palette[1][2],
 				     mid_weight, 180, 1536) +
 		    band_mix_channel(sparkle, state->palette[2][2],
@@ -1312,6 +1517,7 @@ static int run_visualizer(int fd, const struct options *opts)
 	struct avr_led_rgb_vals frame[MAX_LEDS];
 	struct vis_reader vis = { .fd = -1 };
 	struct visualizer_state state = { 0 };
+	struct level_delay_state level_delay = { 0 };
 	int count = led_get_count(fd);
 	int interval_us;
 	int phase = 0;
@@ -1327,10 +1533,12 @@ static int run_visualizer(int fd, const struct options *opts)
 	while (keep_running) {
 		struct vis_levels levels;
 		int ret = -1;
+		int sync_delay_ms = effective_sync_delay_ms(opts);
 		bool active = false;
 
 		memset(&levels, 0, sizeof(levels));
 		if (read_level_file(opts->levels, opts->gain, &levels) == 0) {
+			apply_level_sync_delay(&level_delay, opts, &levels);
 			ret = 0;
 			missing_ticks = 0;
 		} else {
@@ -1376,6 +1584,12 @@ static int run_visualizer(int fd, const struct options *opts)
 		smooth_rgb_frame(&state, frame, count);
 		if (led_set_range(fd, 0, (uint8_t)count, frame) < 0)
 			break;
+		if (levels.running && levels.updated &&
+		    levels.updated != state.last_sync_state_seq) {
+			write_sync_state(&levels, monotonic_ms(), active,
+					 sync_delay_ms);
+			state.last_sync_state_seq = levels.updated;
+		}
 
 		phase = (phase + 1) % count;
 		usleep((useconds_t)interval_us);
@@ -1397,6 +1611,8 @@ static int parse_args(int argc, char **argv, struct options *opts)
 	opts->brightness = DEFAULT_BRIGHTNESS;
 	opts->idle_brightness = DEFAULT_IDLE_BRIGHTNESS;
 	opts->gain = DEFAULT_GAIN;
+	opts->sync_delay_ms = 0;
+	opts->sync_delay_file = DEFAULT_SYNC_DELAY_FILE;
 
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
@@ -1421,6 +1637,14 @@ static int parse_args(int argc, char **argv, struct options *opts)
 		} else if (strcmp(argv[i], "--gain") == 0 && i + 1 < argc) {
 			if (parse_int(argv[++i], 1, 64, &opts->gain) < 0)
 				return -1;
+		} else if (strcmp(argv[i], "--sync-delay-ms") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 2000,
+				      &opts->sync_delay_ms) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--sync-delay-file") == 0 &&
+			   i + 1 < argc) {
+			opts->sync_delay_file = argv[++i];
 		} else if (strcmp(argv[i], "--style") == 0 && i + 1 < argc) {
 			const char *style = argv[++i];
 
