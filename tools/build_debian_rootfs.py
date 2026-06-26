@@ -29,12 +29,16 @@ EXTRA_PACKAGES = {
     "openssh-client",
     "openssh-sftp-server",
     "iproute2",
+    "iputils-ping",
     "ifupdown",
     "isc-dhcp-client",
+    "bind9-dnsutils",
     "kmod",
     "netbase",
     "procps",
     "psmisc",
+    "ntpsec",
+    "tzdata",
     "systemd",
     "systemd-sysv",
     "udev",
@@ -45,7 +49,18 @@ EXTRA_PACKAGES = {
     "wpasupplicant",
     "wireless-regdb",
     "firmware-brcm80211",
+    "iw",
+    "wireless-tools",
     "curl",
+    "less",
+    "nano",
+    "netcat-openbsd",
+    "tcpdump",
+    "htop",
+    "strace",
+    "lsof",
+    "file",
+    "rsync",
     "libccid",
     "libfreefare-bin",
     "libnfc-bin",
@@ -1137,6 +1152,61 @@ exit 1
         "# Loaded by /sbin/nq-load-audio so module parameters are applied.\n",
     )
     write_text(
+        rootfs / "sbin/nq-sync-time",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+: "${NQ_TIME_SYNC_MIN_YEAR:=2024}"
+: "${NQ_TIME_SYNC_URLS:=http://deb.debian.org/debian/ http://somafm.com/}"
+
+log() {
+    echo "[nq-sync-time] $*"
+}
+
+year="$(date -u +%Y 2>/dev/null || echo 0)"
+case "$year" in
+    *[!0-9]*|"") year=0 ;;
+esac
+
+if [ "$year" -ge "$NQ_TIME_SYNC_MIN_YEAR" ] 2>/dev/null; then
+    log "clock already plausible: $(date -u 2>/dev/null || true)"
+    exit 0
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+    log "curl is not installed"
+    exit 1
+fi
+
+for url in $NQ_TIME_SYNC_URLS; do
+    http_date="$(
+        curl -fsSI --connect-timeout 5 --max-time 10 "$url" 2>/dev/null |
+        awk '
+            BEGIN { IGNORECASE = 1 }
+            /^Date:[ \t]*/ {
+                sub(/^Date:[ \t]*/, "")
+                sub(/\r$/, "")
+                print
+                exit
+            }
+        '
+    )"
+    [ -n "$http_date" ] || continue
+    if date -u -s "$http_date" >/dev/null 2>&1; then
+        log "set clock from $url: $(date -u 2>/dev/null || true)"
+        exit 0
+    fi
+    log "failed to apply date from $url: $http_date"
+done
+
+log "failed to sync time"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
         rootfs / "sbin/nq-start-network",
         """#!/bin/sh
 
@@ -1217,6 +1287,17 @@ if command -v busybox >/dev/null 2>&1; then
     busybox udhcpc -i wlan0 -s /sbin/nq-udhcpc-script -n -q -t 5 -T 3 || true
 elif command -v dhclient >/dev/null 2>&1; then
     dhclient -v -1 wlan0 || true
+fi
+
+if [ -x /sbin/nq-sync-time ]; then
+    /sbin/nq-sync-time || true
+fi
+
+if [ -x /etc/init.d/ntpsec ]; then
+    mkdir -p /run/lock /run/ntpsec
+    if ! pgrep -x ntpd >/dev/null 2>&1; then
+        /etc/init.d/ntpsec start || true
+    fi
 fi
 
 AUTH_KEYS=
@@ -2018,6 +2099,8 @@ export PATH
 
 LOG=/run/nexusq-somafm.log
 PID=/run/nq-somafm.pid
+MODE=/run/nq-somafm.mode
+PLAYER_PID=/run/nq-somafm-player.pid
 
 for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
     [ -r "$env" ] || continue
@@ -2041,6 +2124,17 @@ done
 : "${NQ_SOMAFM_DIRECT_PREFIX:=}"
 : "${NQ_SOMAFM_DIRECT_SUFFIX:=}"
 : "${NQ_SOMAFM_STOP_GRACE:=0.25}"
+: "${NQ_SOMAFM_STOP_POLL_INTERVAL:=0.02}"
+: "${NQ_SOMAFM_STOP_POLL_COUNT:=5}"
+: "${NQ_SOMAFM_STOP_ORPHAN_PLAYERS:=0}"
+: "${NQ_SOMAFM_OUTPUT_RELEASE_DELAY:=0.45}"
+: "${NQ_SOMAFM_START_CHECK_DELAY:=0.02}"
+: "${NQ_SOMAFM_TIMING:=1}"
+: "${NQ_SOMAFM_JUKEBOX_STREAM:=0}"
+: "${NQ_SOMAFM_JUKEBOX_URL:=}"
+: "${NQ_SOMAFM_SELECT_PREFIX:=}"
+: "${NQ_SOMAFM_SELECT_SUFFIX:=}"
+: "${NQ_SOMAFM_SELECT_TIMEOUT:=2}"
 
 usage() {
     cat <<'EOF'
@@ -2075,40 +2169,216 @@ pid_live() {
     kill -0 "$pid" 2>/dev/null
 }
 
+pid_exists() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+stamp() {
+    awk '{ print $1; exit }' /proc/uptime 2>/dev/null || date +%s 2>/dev/null || echo 0
+}
+
+timing() {
+    [ "$NQ_SOMAFM_TIMING" = "1" ] || return 0
+    echo "[nq-somafm] t=$(stamp) $*" >>"$LOG" 2>/dev/null || true
+}
+
+short_sleep() {
+    delay="$1"
+    case "$delay" in
+        ""|0|0.0|0.00|0.000) return 0 ;;
+    esac
+    sleep "$delay" 2>/dev/null || true
+}
+
+wait_pid_gone() {
+    pid="$1"
+    count="$NQ_SOMAFM_STOP_POLL_COUNT"
+    case "$count" in
+        ""|*[!0-9]*) count=13 ;;
+    esac
+
+    i=0
+    while [ "$i" -lt "$count" ] 2>/dev/null; do
+        pid_exists "$pid" || return 0
+        short_sleep "$NQ_SOMAFM_STOP_POLL_INTERVAL"
+        i=$((i + 1))
+    done
+    pid_exists "$pid" && return 1
+    return 0
+}
+
+wait_pids_gone() {
+    pids="$*"
+    count="$NQ_SOMAFM_STOP_POLL_COUNT"
+    case "$count" in
+        ""|*[!0-9]*) count=13 ;;
+    esac
+
+    i=0
+    while [ "$i" -lt "$count" ] 2>/dev/null; do
+        still_live=
+        for pid in $pids; do
+            pid_exists "$pid" && still_live=1
+        done
+        [ -n "$still_live" ] || return 0
+        short_sleep "$NQ_SOMAFM_STOP_POLL_INTERVAL"
+        i=$((i + 1))
+    done
+    return 1
+}
+
+proc_children() {
+    pid="$1"
+    [ -r "/proc/$pid/task/$pid/children" ] || return 0
+    cat "/proc/$pid/task/$pid/children" 2>/dev/null || true
+}
+
 stop_pid_file() {
     pid_file="$1"
     [ -s "$pid_file" ] || return 0
     old_pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if pid_live "$old_pid"; then
+    if pid_exists "$old_pid"; then
+        timing "stop pid=$old_pid file=$pid_file"
         kill "$old_pid" 2>/dev/null || true
-        sleep "$NQ_SOMAFM_STOP_GRACE" 2>/dev/null || true
-        pid_live "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
+        wait_pid_gone "$old_pid" || true
+        pid_exists "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
+        timing "stopped pid=$old_pid file=$pid_file"
     fi
     rm -f "$pid_file"
+    [ "$pid_file" = "$PID" ] && rm -f "$MODE" "$PLAYER_PID"
+}
+
+stop_player_tree() {
+    [ -s "$PID" ] || return 1
+    old_pid="$(cat "$PID" 2>/dev/null || true)"
+    [ -n "$old_pid" ] || return 1
+    child_pids="$(cat "$PLAYER_PID" 2>/dev/null || true) $(proc_children "$old_pid")"
+    pids="$old_pid $child_pids"
+
+    timing "stop player tree pids=$pids"
+    kill $pids 2>/dev/null || true
+    wait_pids_gone $pids || true
+    for pid in $pids; do
+        pid_exists "$pid" && kill -KILL "$pid" 2>/dev/null || true
+    done
+    wait_pids_gone $pids || true
+    rm -f "$PID" "$MODE" "$PLAYER_PID"
+    timing "stopped player tree pids=$pids"
+    return 0
 }
 
 stop_proc_name() {
     name="$1"
     live_pids=
     for pid in $(pgrep -x "$name" 2>/dev/null || pidof "$name" 2>/dev/null || true); do
-        pid_live "$pid" || continue
+        pid_exists "$pid" || continue
         live_pids="$live_pids $pid"
     done
     [ -n "$live_pids" ] || return 0
+    timing "stop process=$name pids=$live_pids"
     kill $live_pids 2>/dev/null || true
-    sleep "$NQ_SOMAFM_STOP_GRACE" 2>/dev/null || true
+    wait_pids_gone $live_pids || true
     for pid in $live_pids; do
-        pid_live "$pid" && kill -KILL "$pid" 2>/dev/null || true
+        pid_exists "$pid" && kill -KILL "$pid" 2>/dev/null || true
     done
+    timing "stopped process=$name pids=$live_pids"
 }
 
 stop_players() {
-    stop_proc_name mpg123
-    stop_pid_file "$PID"
-    if [ "$NQ_SOMAFM_STOP_SQUEEZELITE" = "1" ]; then
-        stop_proc_name squeezelite
-        rm -f /run/nq-squeezelite.pid
+    if ! stop_player_tree; then
+        stop_proc_name mpg123
+    elif [ "$NQ_SOMAFM_STOP_ORPHAN_PLAYERS" = "1" ]; then
+        stop_proc_name mpg123
     fi
+    if [ "$NQ_SOMAFM_STOP_SQUEEZELITE" = "1" ]; then
+        if [ -s /run/nq-squeezelite.pid ]; then
+            stop_pid_file /run/nq-squeezelite.pid
+            stop_proc_name squeezelite
+            rm -f /run/nq-squeezelite.pid
+        fi
+    fi
+    if [ -n "$NQ_SOMAFM_OUTPUT_RELEASE_DELAY" ]; then
+        timing "audio release wait delay=$NQ_SOMAFM_OUTPUT_RELEASE_DELAY"
+        short_sleep "$NQ_SOMAFM_OUTPUT_RELEASE_DELAY"
+    fi
+}
+
+station_id_for_select() {
+    target="$1"
+    case "$target" in
+        somafm:*)
+            target="${target#somafm:}"
+            ;;
+    esac
+    case "$target" in
+        *[!A-Za-z0-9_-]*|"") return 1 ;;
+    esac
+    printf '%s\\n' "$target"
+}
+
+start_jukebox_stream_player() {
+    [ -n "$NQ_SOMAFM_JUKEBOX_URL" ] || return 1
+    if pid_live "$(cat "$PID" 2>/dev/null || true)" && [ "$(cat "$MODE" 2>/dev/null || true)" = "jukebox-stream" ]; then
+        return 0
+    fi
+
+    stop_players
+    (
+        trap '' HUP
+        export NQ_PLAY_MIXER_CARD="$NQ_SOMAFM_MIXER_CARD"
+        export NQ_PLAY_MASTER_VOLUME="$NQ_SOMAFM_MASTER_VOLUME"
+        export NQ_PLAY_SPEAKER_VOLUME="$NQ_SOMAFM_SPEAKER_VOLUME"
+        export NQ_PLAY_SPEAKER_SWITCH="$NQ_SOMAFM_SPEAKER_SWITCH"
+        export NQ_PLAY_OUTPUT="$NQ_SOMAFM_OUTPUT"
+        export NQ_PLAY_RATE="$NQ_SOMAFM_RATE"
+        export NQ_PLAY_ENCODING="$NQ_SOMAFM_ENCODING"
+        export NQ_PLAY_DEVBUFFER="$NQ_SOMAFM_DEVBUFFER"
+        export NQ_PLAY_BUFFER="$NQ_SOMAFM_BUFFER"
+        export NQ_PLAY_PRELOAD="$NQ_SOMAFM_PRELOAD"
+        while :; do
+            /usr/bin/nq-play "$NQ_SOMAFM_JUKEBOX_URL" &
+            player_pid="$!"
+            echo "$player_pid" >"$PLAYER_PID"
+            wait "$player_pid"
+            rc="$?"
+            rm -f "$PLAYER_PID"
+            echo "[nq-somafm] jukebox stream exited rc=$rc; restarting in ${NQ_SOMAFM_RESTART_DELAY}s"
+            sleep "$NQ_SOMAFM_RESTART_DELAY"
+        done
+    ) </dev/null >>"$LOG" 2>&1 &
+    echo "$!" >"$PID"
+    echo "jukebox-stream" >"$MODE"
+    timing "jukebox player spawned pid=$(cat "$PID" 2>/dev/null || true)"
+    short_sleep "$NQ_SOMAFM_START_CHECK_DELAY"
+    pid_live "$(cat "$PID" 2>/dev/null || true)"
+}
+
+play_jukebox_stream() {
+    station_id="$1"
+    [ -n "$NQ_SOMAFM_SELECT_PREFIX" ] || return 1
+    select_url="${NQ_SOMAFM_SELECT_PREFIX}${station_id}${NQ_SOMAFM_SELECT_SUFFIX}"
+
+    mkdir -p /run /run/nexusq
+    : >"$LOG"
+    {
+        echo "[nq-somafm] station=$station_id"
+        echo "[nq-somafm] jukebox_url=$NQ_SOMAFM_JUKEBOX_URL"
+        echo "[nq-somafm] select_url=$select_url"
+        date 2>/dev/null || true
+    } >>"$LOG"
+
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "nq-somafm-play: curl is not installed" >&2
+        return 1
+    fi
+    timing "select request begin station=$station_id"
+    curl -fsS --connect-timeout 1 --max-time "$NQ_SOMAFM_SELECT_TIMEOUT" "$select_url" >>"$LOG" 2>&1 || return 1
+    timing "select request done station=$station_id"
+    start_jukebox_stream_player || return 1
+    timing "jukebox selected station=$station_id pid=$(cat "$PID" 2>/dev/null || true)"
+    echo "nq-somafm: jukebox selected $station_id pid=$(cat "$PID" 2>/dev/null || true)"
 }
 
 resolve_target() {
@@ -2163,12 +2433,28 @@ case "${1:-}" in
 esac
 
 station="$1"
-echo "nq-somafm: resolving $station" >&2
-url="$(resolve_target "$station")" || exit 1
+if [ "$NQ_SOMAFM_JUKEBOX_STREAM" = "1" ]; then
+    station_id="$(station_id_for_select "$station")" || {
+        echo "nq-somafm-play: jukebox stream mode requires a station id, got: $station" >&2
+        exit 2
+    }
+    play_jukebox_stream "$station_id" || {
+        echo "nq-somafm-play: jukebox stream select failed for station=$station_id" >&2
+        exit 1
+    }
+    exit 0
+fi
 
 mkdir -p /run /run/nexusq
-stop_players
 : >"$LOG"
+timing "request station=$station"
+echo "nq-somafm: resolving $station" >&2
+url="$(resolve_target "$station")" || exit 1
+timing "resolved station=$station"
+
+timing "stop players begin"
+stop_players
+timing "stop players done"
 {
     echo "[nq-somafm] station=$station"
     echo "[nq-somafm] url=$url"
@@ -2191,17 +2477,24 @@ stop_players
         exec /usr/bin/nq-play "$url"
     fi
     while :; do
-        /usr/bin/nq-play "$url"
+        /usr/bin/nq-play "$url" &
+        player_pid="$!"
+        echo "$player_pid" >"$PLAYER_PID"
+        wait "$player_pid"
         rc="$?"
+        rm -f "$PLAYER_PID"
         echo "[nq-somafm] player exited rc=$rc; restarting in ${NQ_SOMAFM_RESTART_DELAY}s"
         sleep "$NQ_SOMAFM_RESTART_DELAY"
     done
 ) </dev/null >>"$LOG" 2>&1 &
 echo "$!" >"$PID"
+echo "direct" >"$MODE"
 echo "nq-somafm: starting $station pid=$(cat "$PID" 2>/dev/null || true)" >&2
-sleep 0.2 2>/dev/null || sleep 1
+timing "player spawned station=$station pid=$(cat "$PID" 2>/dev/null || true)"
+short_sleep "$NQ_SOMAFM_START_CHECK_DELAY"
 
 if pid_live "$(cat "$PID" 2>/dev/null || true)"; then
+    timing "player live station=$station pid=$(cat "$PID" 2>/dev/null || true)"
     echo "nq-somafm: playing $station pid=$(cat "$PID")"
     exit 0
 fi
@@ -2316,30 +2609,29 @@ scan_kernel() {
 }
 
 scan_libnfc() {
-    if [ "$loop" = "1" ]; then
-        echo "nq-nfc-scan: --loop is only supported by the kernel backend" >&2
-        return 2
-    fi
-
     if ! command -v nfc-poll >/dev/null 2>&1; then
         echo "nq-nfc-scan: nfc-poll is not installed" >&2
         return 1
     fi
 
-    start_pcscd
-    out="$(nfc-poll 2>&1)"
-    rc="$?"
-    [ "$uid_only" = "1" ] || printf '%s\\n' "$out"
-    uid="$(printf '%s\\n' "$out" | parse_uid)"
-    if [ -n "$uid" ]; then
-        if [ "$uid_only" = "1" ]; then
-            printf '%s\\n' "$uid"
+    while :; do
+        start_pcscd
+        out="$(nfc-poll 2>&1)"
+        rc="$?"
+        [ "$uid_only" = "1" ] || printf '%s\\n' "$out"
+        uid="$(printf '%s\\n' "$out" | parse_uid)"
+        if [ -n "$uid" ]; then
+            if [ "$uid_only" = "1" ]; then
+                printf '%s\\n' "$uid"
+            else
+                echo "nq-nfc-scan: uid=$uid"
+            fi
+            [ "$loop" = "1" ] || exit 0
         else
-            echo "nq-nfc-scan: uid=$uid"
+            [ "$loop" = "1" ] || return "$rc"
         fi
-        exit 0
-    fi
-    return "$rc"
+        sleep 0.1 2>/dev/null || true
+    done
 }
 
 while [ "$#" -gt 0 ]; do
@@ -2771,13 +3063,22 @@ done
 : "${NQ_NFC_SCAN_RESTART_SLEEP:=1}"
 : "${NQ_NFC_DEBUG:=0}"
 : "${NQ_NFC_ACK_ENABLE:=1}"
+: "${NQ_NFC_TIMING:=1}"
 
 log() {
-    echo "[nq-nfc-jukebox] $*"
+    if [ "$NQ_NFC_TIMING" = "1" ]; then
+        echo "[nq-nfc-jukebox] t=$(stamp) $*"
+    else
+        echo "[nq-nfc-jukebox] $*"
+    fi
 }
 
 pid_now() {
     date +%s 2>/dev/null || echo 0
+}
+
+stamp() {
+    awk '{ print $1; exit }' /proc/uptime 2>/dev/null || date +%s 2>/dev/null || echo 0
 }
 
 station_for_uid() {
@@ -2795,6 +3096,23 @@ station_for_uid() {
             }
         }
     ' "$NQ_NFC_TAGS"
+}
+
+use_scan_loop() {
+    case "$NQ_NFC_SCAN_LOOP" in
+        1|yes|true|on)
+            [ "$NQ_NFC_SCAN_BACKEND" = "libnfc" ] && return 1
+            return 0
+            ;;
+        auto)
+            [ "$NQ_NFC_SCAN_BACKEND" = "libnfc" ] && return 1
+            command -v nq-nfc-poll >/dev/null 2>&1 || return 1
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 if [ "$NQ_NFC_JUKEBOX_ENABLE" != "1" ]; then
@@ -2837,14 +3155,19 @@ handle_uid() {
 
     log "tag uid=$uid station=$station"
     if [ "$NQ_NFC_ACK_ENABLE" = "1" ] && command -v nq-nfc-ack >/dev/null 2>&1; then
+        log "ack begin uid=$uid station=$station"
         nq-nfc-ack || log "ack failed"
+        log "ack done uid=$uid station=$station"
     fi
+    log "play begin uid=$uid station=$station"
     /usr/bin/nq-somafm-play "$station" || log "play failed for station=$station"
+    log "play done uid=$uid station=$station"
     last_uid="$uid"
     last_time="$now"
 }
 
-if [ "$NQ_NFC_SCAN_LOOP" = "1" ] && [ "$NQ_NFC_SCAN_BACKEND" != "libnfc" ]; then
+if use_scan_loop; then
+    log "using continuous scan backend=$NQ_NFC_SCAN_BACKEND timeout=$NQ_NFC_SCAN_TIMEOUT"
     while true; do
         nq-nfc-scan --uid-only --loop --backend "$NQ_NFC_SCAN_BACKEND" --timeout "$NQ_NFC_SCAN_TIMEOUT" 2>&1 | while IFS= read -r line; do
             case "$line" in
@@ -3390,6 +3713,73 @@ Runtime-only test files in /run/nexusq override these persistent files.
                 break
 
 
+def next_free_system_id(used_ids):
+    for candidate in range(100, 1000):
+        if candidate not in used_ids:
+            return candidate
+    raise RuntimeError("no free system uid/gid available")
+
+
+def ensure_system_account(
+    rootfs,
+    name,
+    preferred_uid,
+    preferred_gid,
+    home="/nonexistent",
+    shell="/usr/sbin/nologin",
+):
+    group_path = rootfs / "etc/group"
+    groups = group_path.read_text().splitlines()
+    group_ids = set()
+    group_gid = None
+    for line in groups:
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(":")
+        if len(parts) < 3:
+            continue
+        try:
+            gid = int(parts[2])
+        except ValueError:
+            continue
+        group_ids.add(gid)
+        if parts[0] == name:
+            group_gid = gid
+    if group_gid is None:
+        group_gid = preferred_gid if preferred_gid not in group_ids else next_free_system_id(group_ids)
+        groups.append(f"{name}:x:{group_gid}:")
+        write_text(group_path, "\n".join(groups) + "\n")
+
+    passwd_path = rootfs / "etc/passwd"
+    shadow_path = rootfs / "etc/shadow"
+    passwd = passwd_path.read_text().splitlines()
+    shadow = shadow_path.read_text().splitlines()
+    user_ids = set()
+    user_exists = False
+    for line in passwd:
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(":")
+        if len(parts) < 4:
+            continue
+        try:
+            uid = int(parts[2])
+        except ValueError:
+            continue
+        user_ids.add(uid)
+        if parts[0] == name:
+            user_exists = True
+    if not user_exists:
+        uid = preferred_uid if preferred_uid not in user_ids else next_free_system_id(user_ids)
+        passwd.append(f"{name}:x:{uid}:{group_gid}::{home}:{shell}")
+        write_text(passwd_path, "\n".join(passwd) + "\n")
+
+    shadow_users = {line.split(":", 1)[0] for line in shadow if line and not line.startswith("#")}
+    if name not in shadow_users:
+        shadow.append(f"{name}:*:19723:0:99999:7:::")
+        write_text(shadow_path, "\n".join(shadow) + "\n", 0o600)
+
+
 def configure_base_accounts(rootfs):
     passwd_master = rootfs / "usr/share/base-passwd/passwd.master"
     group_master = rootfs / "usr/share/base-passwd/group.master"
@@ -3428,6 +3818,7 @@ def configure_base_accounts(rootfs):
             existing_shadow.add(name)
     write_text(passwd_path, "\n".join(passwd) + "\n")
     write_text(shadow_path, "\n".join(shadow) + "\n", 0o600)
+    ensure_system_account(rootfs, "ntpsec", 101, 102)
 
 
 def configure_ca_certificates(rootfs):
@@ -3474,6 +3865,59 @@ def configure_basic_alternatives(rootfs):
     ensure_relative_symlink(rootfs, "usr/bin/awk", "gawk")
     ensure_relative_symlink(rootfs, "usr/bin/mpg123", "mpg123.bin")
     ensure_relative_symlink(rootfs, "usr/bin/mp3-decoder", "mpg123.bin")
+
+
+def remove_path(path):
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def strip_doc_payload(rootfs):
+    doc_dir = rootfs / "usr/share/doc"
+    if not doc_dir.exists():
+        return
+    for package_doc in doc_dir.iterdir():
+        if package_doc.is_symlink() or package_doc.is_file():
+            continue
+        for child in package_doc.iterdir():
+            if child.name == "copyright":
+                continue
+            remove_path(child)
+
+
+def strip_nonessential_payload(rootfs):
+    strip_doc_payload(rootfs)
+    for rel in (
+        "usr/share/info",
+        "usr/share/lintian",
+        "usr/share/man",
+        "var/cache/apt",
+        "var/lib/apt/lists",
+    ):
+        remove_path(rootfs / rel)
+
+    locale_dir = rootfs / "usr/share/locale"
+    if locale_dir.exists():
+        for child in locale_dir.iterdir():
+            remove_path(child)
+
+    for python_dir in (rootfs / "usr/lib").glob("python*"):
+        if not python_dir.is_dir():
+            continue
+        for rel in ("test", "tests"):
+            remove_path(python_dir / rel)
+        for pycache in list(python_dir.rglob("__pycache__")):
+            remove_path(pycache)
+
+    for rel in (
+        "var/cache/apt/archives/partial",
+        "var/lib/apt/lists/partial",
+    ):
+        path = rootfs / rel
+        path.mkdir(parents=True, exist_ok=True)
+        set_owner_mode(path, 0o755)
 
 
 def write_dpkg_status(rootfs, packages, selected):
@@ -3597,6 +4041,7 @@ def main():
     configure_standard_modes(rootfs)
     configure_basic_alternatives(rootfs)
     write_dpkg_status(rootfs, packages, selected)
+    strip_nonessential_payload(rootfs)
 
     manifest = work / "packages.txt"
     manifest.write_text("\n".join(sorted(selected)) + "\n")

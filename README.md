@@ -67,7 +67,7 @@ History links:
 
 ## Release Artifacts
 
-The v0.3.0 release assets are:
+The v0.4.0 release assets are:
 
 - `nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img`
   - Android boot image for `fastboot flash boot`
@@ -76,13 +76,13 @@ The v0.3.0 release assets are:
 - `nexusq-debian-trixie-armhf-rootfs.sparse.img`
   - Android sparse image for `fastboot flash userdata`
   - Debian 13.5 armhf rootfs
-- `SHA256SUMS-v0.3.0.txt`
+- `SHA256SUMS-v0.4.0.txt`
 
 Download them from:
 
-<https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.3.0>
+<https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.4.0>
 
-Release notes are in [RELEASE_NOTES_v0.3.0.md](RELEASE_NOTES_v0.3.0.md).
+Release notes are in [RELEASE_NOTES_v0.4.0.md](RELEASE_NOTES_v0.4.0.md).
 
 ## Flash And Boot
 
