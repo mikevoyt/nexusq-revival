@@ -52,12 +52,12 @@ nq-led-visualizer --sweep --brightness 16
 nq-led-visualizer --off
 ```
 
-The music visualizer mode supports two audio sources:
+The music visualizer mode's primary audio source is standalone playback:
 
 - Standalone SomaFM playback writes coarse PCM levels to
   `/run/nexusq-audio-levels` through `nq-pcm-level-tap`. This is the default
   appliance path.
-- Squeezelite can still expose its `-v` shared-memory buffer at
+- Legacy Squeezelite support can still expose its `-v` shared-memory buffer at
   `/dev/shm/squeezelite-<mac>` for Music Assistant playback.
 
 Upstream Squeezelite's `output_vis.c` defines that shared-memory export as a
@@ -72,6 +72,39 @@ low-frequency energy, and layers independently rotating color bands for bass,
 midrange, and upper-frequency accents. Those bands slowly pick new clockwise or
 counterclockwise drift speeds while the palette and texture blends continue to
 evolve. A simpler `spectrum` style is also available for experiments.
+
+## Audio Sync
+
+Standalone playback meters decoded PCM before the same PCM drains through
+`aplay` and ALSA. If the LEDs visibly lag the speaker output,
+`nq-pcm-level-tap` can delay the audio stream after metering:
+
+```sh
+NQ_PLAY_AUDIO_DELAY_MS=100 nq-play somafm:groovesalad
+```
+
+The SomaFM appliance path defaults to `NQ_SOMAFM_AUDIO_DELAY_MS=0`. Raise the
+value only if the LEDs visibly lag the speaker output.
+
+If the LEDs visibly lead the speaker output, delay the visualizer instead. The
+default appliance visualizer uses `NQ_LED_VISUALIZER_SYNC_DELAY_MS=220`, and the
+running daemon can be tuned live with:
+
+```sh
+echo 220 >/run/nexusq-led-sync-delay-ms
+```
+
+Use the sync test when the direction is unclear:
+
+```sh
+nq-visualizer-sync-test 0
+nq-visualizer-sync-test 220
+nq-visualizer-sync-test --sweep
+```
+
+The test stops local playback and sends metronome-like PCM bursts through the
+same `nq-pcm-level-tap` and `/run/nexusq-audio-levels` path used by SomaFM.
+Higher test values move the LED pulse later relative to the audible pip.
 
 ## Persistent Configuration
 
@@ -89,6 +122,7 @@ NQ_LED_VISUALIZER_BRIGHTNESS=255
 NQ_LED_VISUALIZER_IDLE_BRIGHTNESS=6
 NQ_LED_VISUALIZER_GAIN=8
 NQ_LED_VISUALIZER_STYLE=pulse
+NQ_LED_VISUALIZER_SYNC_DELAY_MS=220
 EOF
 ```
 
@@ -103,8 +137,8 @@ Persist it:
 
 With `NQ_LED_VISUALIZER_SOURCE=auto`, the visualizer reads
 `/run/nexusq-audio-levels` when standalone SomaFM playback is active and falls
-back to Squeezelite shared memory when that level file is missing or stale. Set
-`NQ_LED_VISUALIZER_SOURCE=squeezelite` to force the Music Assistant path.
+back to legacy Squeezelite shared memory when that level file is missing or
+stale. Set `NQ_LED_VISUALIZER_SOURCE=squeezelite` to force that legacy path.
 
 When Squeezelite is enabled, `/sbin/nq-start-squeezelite` automatically adds
 Squeezelite's `-v` flag unless `NQ_SQUEEZELITE_VISUALIZER` overrides it.

@@ -43,9 +43,16 @@ The rootfs includes:
   - Stops prior local `mpg123` playback.
   - Stops Squeezelite by default so ALSA is available.
   - Starts the SomaFM stream through `nq-play`.
+  - Software-mutes the first decoded PCM frames by default and fades in so the
+    first unstable stream frames are hidden without changing mixer state during
+    playback.
+  - Watches `/run/nexusq-audio-chime` while playback is active and mixes a
+    short tap-confirmation chime directly into the live PCM stream.
   - Enables the standalone visualizer path by default: decoded PCM passes
     through `nq-pcm-level-tap`, which publishes `/run/nexusq-audio-levels`
     before audio reaches `aplay`.
+  - Delays the audible PCM by `NQ_SOMAFM_AUDIO_DELAY_MS` so the LED visualizer
+    can be tuned into sync with speaker output.
   - Use `nq-somafm-play --list` for current station ids.
 - `nq-nfc-scan`
   - Prefers the built-in PN544 through Linux NFC generic netlink.
@@ -61,10 +68,16 @@ The rootfs includes:
 - `nq-nfc-ack`
   - Plays the short tap-confirmation chime before SomaFM playback starts unless
     `NQ_NFC_ACK_ENABLE=0`.
+  - When SomaFM playback is active, triggers the in-band PCM chime first so the
+    tap can be heard without waiting for ALSA to close and reopen.
+  - Stops the current local player pipeline first so ALSA is available for the
+    fallback `aplay` chime path when no in-band stream is available.
 - `/sbin/nq-start-nfc-jukebox`
   - Starts the NFC polling loop. Set `NQ_NFC_JUKEBOX_ENABLE=0` when the Q
     should ignore cards, for example in a dedicated Squeezelite setup.
   - Maps tag UID to station id using `/etc/nexusq/somafm-tags.conf`.
+  - Resolves the SomaFM stream URL in parallel with the tap chime so stream
+    startup can begin immediately after the chime path releases ALSA.
 
 ## First Manual Test
 
@@ -173,11 +186,22 @@ NQ_NFC_COOLDOWN_SECONDS=3
 NQ_NFC_IDLE_SLEEP=0
 NQ_NFC_SCAN_TIMEOUT=1
 NQ_NFC_ACK_ENABLE=1
+NQ_NFC_ACK_INBAND=1
+NQ_NFC_ACK_INBAND_HOLD=0.60
+NQ_NFC_AFTER_ACK_OUTPUT_RELEASE_DELAY=0.05
 NQ_SOMAFM_STOP_SQUEEZELITE=1
 NQ_SOMAFM_MASTER_VOLUME=preserve
 NQ_SOMAFM_SPEAKER_VOLUME=preserve
 NQ_SOMAFM_VISUALIZER_ENABLE=1
 NQ_SOMAFM_VISUALIZER_LEVELS=/run/nexusq-audio-levels
+NQ_SOMAFM_AUDIO_DELAY_MS=0
+NQ_SOMAFM_STARTUP_MUTE=1
+NQ_SOMAFM_STARTUP_MUTE_MS=350
+NQ_SOMAFM_STARTUP_FADE_MS=200
+NQ_SOMAFM_CHIME_TRIGGER=/run/nexusq-audio-chime
+NQ_SOMAFM_CHIME_MS=550
+NQ_SOMAFM_CHIME_GAIN=900
+NQ_SOMAFM_CHIME_DUCK_PERCENT=30
 EOF
 ```
 
