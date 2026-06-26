@@ -20,17 +20,21 @@ Validated on real Nexus Q hardware in June 2026:
 - ALSA exposes `card 0: TAS5713 [Steelhead TAS5713]`.
 - The internal TAS5713 speaker path plays 48 kHz stereo PCM and MP3 on Linux
   6.6 after the Steelhead ABE DPLL clock-parent fix.
-- Opt-in Squeezelite endpoint support is validated for Music Assistant
+- The standalone SomaFM NFC jukebox is the default local playback direction:
+  printed NFC cards map to SomaFM channel ids and start on-device stream
+  playback.
+- Opt-in Squeezelite endpoint support remains available for Music Assistant
   playback.
 - The Nexus Q top ring controls TAS5713 hardware volume through the front-panel
   AVR input driver and `nq-knob-volume`.
-- The LED ring is controllable through `/dev/leds`, and an opt-in Squeezelite
-  amplitude visualizer can drive it during Music Assistant playback.
+- The LED ring is controllable through `/dev/leds`; the visualizer can follow
+  standalone SomaFM playback through a local PCM level tap, or Squeezelite
+  playback through its shared-memory visualizer export.
 - An opt-in ADB-compatible debug bridge provides root Bash shell and file sync
   for trusted local bring-up networks.
-- Prototype SomaFM NFC jukebox helpers can scan NFC tag/card UIDs through the
-  built-in PN544 or an external reader, map them to SomaFM channel ids, and
-  start local stream playback.
+- SomaFM NFC jukebox helpers can scan NFC tag/card UIDs through the built-in
+  PN544 or an external reader, map them to SomaFM channel ids, and start local
+  stream playback.
 - Built-in PN544 NFC card scans have been validated on real hardware, including
   UID-to-station playback through the SomaFM jukebox loop.
 - The public boot image stays running by default; return-to-fastboot is now an
@@ -42,8 +46,8 @@ Still experimental:
   normal boot from the `boot` partition.
 - Full systemd service bring-up is not the default init path.
 - HDMI, S/PDIF, advanced LED effects, and cap-touch handling are not finished.
-- The LED visualizer is an early amplitude-based effect, not a frequency-band
-  or Music Assistant UI-integrated visualizer yet.
+- The LED visualizer is a local amplitude/coarse-band effect, not a full FFT or
+  Music Assistant UI-integrated visualizer yet.
 - TAS5713 speaker validation has focused on one wired speaker so far; full
   stereo/channel-routing validation is still pending.
 - Wi-Fi depends on calibration from an existing stock `system` partition, or a
@@ -107,7 +111,7 @@ Persistent Wi-Fi/SSH provisioning for appliance-style use is documented in
 [APPLIANCE.md](APPLIANCE.md).
 Music Assistant player endpoint setup is documented in
 [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md).
-LED ring control and the Squeezelite visualizer are documented in
+LED ring control and the local playback visualizer are documented in
 [LED_RING_VISUALIZER.md](LED_RING_VISUALIZER.md).
 The SomaFM NFC jukebox prototype is documented in [NFC_JUKEBOX.md](NFC_JUKEBOX.md).
 

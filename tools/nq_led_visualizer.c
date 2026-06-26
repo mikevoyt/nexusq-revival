@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Nexus Q LED ring control and Squeezelite visualizer.
+ * Nexus Q LED ring control and local audio visualizer.
  *
  * Talks to the kernel-owned Steelhead AVR misc device at /dev/leds. For music
- * visualization it reads Squeezelite's VISEXPORT shared-memory sample buffer
- * and converts recent PCM energy into a low-rate RGB ring frame.
+ * visualization it reads either a local PCM level file or Squeezelite's
+ * VISEXPORT shared-memory sample buffer and converts recent PCM energy into a
+ * low-rate RGB ring frame.
  */
 
 #include <ctype.h>
@@ -21,11 +22,12 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define DEFAULT_LED_DEV "/dev/leds"
 #define DEFAULT_SHM_DIR "/dev/shm"
-#define DEFAULT_FPS 20
+#define DEFAULT_FPS 60
 #define DEFAULT_BRIGHTNESS 255
 #define DEFAULT_IDLE_BRIGHTNESS 6
 #define DEFAULT_GAIN 8
@@ -34,6 +36,13 @@
 #define VIS_WINDOW_SAMPLES 2048
 #define VIS_EXPECTED_BUF_SIZE 16384U
 #define VIS_BANDS 3
+#define VIS_LEVELS (VIS_BANDS + 1)
+#define VIS_OVERALL_SLOT VIS_BANDS
+#define RGB_CHANNELS 3
+#define LEVEL_FILE_STALE_MS 1500LL
+#define TRACK_MIN_RANGE 192
+#define TRACK_HISTORY 48
+#define ANIM_PHASE_SCALE 1024
 
 #define AVR_LED_MODE_HOST_AUTO_COMMIT 0x01
 
@@ -79,6 +88,7 @@ enum visualizer_style {
 struct options {
 	const char *device;
 	const char *shm;
+	const char *levels;
 	enum command command;
 	enum visualizer_style style;
 	int fps;
@@ -110,11 +120,33 @@ struct vis_levels {
 };
 
 struct visualizer_state {
-	int fluid[MAX_LEDS];
-	int velocity[MAX_LEDS];
+	int instant_overall;
+	int instant_bands[VIS_BANDS];
 	int smooth_overall;
 	int smooth_bands[VIS_BANDS];
-	int limiter;
+	int beat_flash;
+	int track_history[VIS_LEVELS][TRACK_HISTORY];
+	int track_hist_pos;
+	int track_hist_count;
+	int track_floor[VIS_LEVELS];
+	int track_peak[VIS_LEVELS];
+	int palette[VIS_BANDS][RGB_CHANNELS];
+	int palette_target[VIS_BANDS][RGB_CHANNELS];
+	int palette_ticks;
+	int texture[MAX_LEDS];
+	int texture_target[MAX_LEDS];
+	int texture_ticks;
+	int band_phase[VIS_BANDS];
+	int band_speed[VIS_BANDS];
+	int band_speed_target[VIS_BANDS];
+	int animation_ticks;
+	uint32_t rng;
+	uint32_t last_level_seq;
+	bool palette_ready;
+	bool texture_ready;
+	bool animation_ready;
+	bool frame_smooth_valid;
+	struct avr_led_rgb_vals smooth_frame[MAX_LEDS];
 };
 
 static volatile sig_atomic_t keep_running = 1;
@@ -129,7 +161,7 @@ static void usage(const char *argv0)
 {
 	fprintf(stderr,
 		"usage:\n"
-		"  %s [--device /dev/leds] [--shm PATH_OR_NAME] [--fps N]\n"
+		"  %s [--device /dev/leds] [--levels PATH] [--shm PATH_OR_NAME] [--fps N]\n"
 		"     [--brightness 0..255] [--idle-brightness 0..255]\n"
 		"     [--gain N] [--style spectrum|pulse]\n"
 		"  %s --info [--device /dev/leds]\n"
@@ -170,6 +202,15 @@ static int clamp_int(int value, int min, int max)
 	if (value > max)
 		return max;
 	return value;
+}
+
+static long long monotonic_ms(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+		return 0;
+	return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
 }
 
 static int led_open(const char *device)
@@ -566,134 +607,546 @@ static int vis_read_levels(struct vis_reader *vis, int gain,
 	return 0;
 }
 
+static int parse_key_value_long(const char *line, const char *key, long *out)
+{
+	size_t key_len = strlen(key);
+	char *end = NULL;
+	long value;
+
+	if (strncmp(line, key, key_len) != 0 || line[key_len] != '=')
+		return -1;
+
+	errno = 0;
+	value = strtol(line + key_len + 1, &end, 0);
+	if (errno || end == line + key_len + 1)
+		return -1;
+	*out = value;
+	return 0;
+}
+
+static int read_level_file(const char *path, int gain,
+			   struct vis_levels *levels)
+{
+	char data[512];
+	char *line;
+	char *saveptr = NULL;
+	long updated_ms = -1;
+	long running = 0;
+	long overall = 0;
+	long bands[VIS_BANDS] = { 0, 0, 0 };
+	ssize_t got;
+	int fd;
+	int i;
+
+	if (!path || !path[0])
+		return -1;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	got = read(fd, data, sizeof(data) - 1);
+	close(fd);
+	if (got <= 0)
+		return -1;
+	data[got] = '\0';
+
+	memset(levels, 0, sizeof(*levels));
+	for (line = strtok_r(data, "\n", &saveptr); line;
+	     line = strtok_r(NULL, "\n", &saveptr)) {
+		long value;
+
+		if (parse_key_value_long(line, "updated_ms", &value) == 0) {
+			updated_ms = value;
+		} else if (parse_key_value_long(line, "running", &value) == 0) {
+			running = value;
+		} else if (parse_key_value_long(line, "overall", &value) == 0) {
+			overall = value;
+		} else if (parse_key_value_long(line, "band0", &value) == 0) {
+			bands[0] = value;
+		} else if (parse_key_value_long(line, "band1", &value) == 0) {
+			bands[1] = value;
+		} else if (parse_key_value_long(line, "band2", &value) == 0) {
+			bands[2] = value;
+		} else if (parse_key_value_long(line, "seq", &value) == 0) {
+			levels->updated = (uint32_t)value;
+		}
+	}
+
+	if (updated_ms < 0)
+		return -1;
+	if (monotonic_ms() - updated_ms > LEVEL_FILE_STALE_MS)
+		return -1;
+	if (!running)
+		return -1;
+
+	levels->running = true;
+	levels->overall = clamp_int((int)overall * gain, 0, 4096);
+	for (i = 0; i < VIS_BANDS; i++)
+		levels->bands[i] = clamp_int((int)bands[i] * gain, 0, 4096);
+	return 0;
+}
+
+static int smooth_toward(int current, int target, int rise_div, int fall_div)
+{
+	int delta = target - current;
+	int div;
+	int step;
+
+	if (!delta)
+		return current;
+
+	div = delta > 0 ? rise_div : fall_div;
+	if (div < 1)
+		div = 1;
+
+	step = delta / div;
+	if (!step)
+		step = delta > 0 ? 1 : -1;
+	return current + step;
+}
+
 static int smooth_level(int current, int target)
 {
 	if (target > current)
-		return current + (target - current) / 3 + 1;
+		return smooth_toward(current, target, 1, 4);
 	if (target < current)
-		return current - (current - target) / 8 - 1;
+		return smooth_toward(current, target, 1, 9);
 	return current;
 }
 
-static int update_limiter(struct visualizer_state *state,
-			  const struct vis_levels *levels)
+static void push_track_history(struct visualizer_state *state,
+			       const struct vis_levels *levels)
 {
-	int target = levels->overall;
+	int pos = state->track_hist_pos;
 	int i;
 
+	state->track_history[VIS_OVERALL_SLOT][pos] =
+		clamp_int(levels->overall, 0, 4096);
 	for (i = 0; i < VIS_BANDS; i++) {
-		if (levels->bands[i] > target)
-			target = levels->bands[i];
+		state->track_history[i][pos] =
+			clamp_int(levels->bands[i], 0, 4096);
 	}
 
-	if (state->limiter < 256)
-		state->limiter = 256;
-
-	if (target > state->limiter)
-		state->limiter += (target - state->limiter) / 2 + 16;
-	else
-		state->limiter -= (state->limiter - target) / 96 + 1;
-
-	if (state->limiter < 256)
-		state->limiter = 256;
-	return state->limiter;
+	state->track_hist_pos = (state->track_hist_pos + 1) % TRACK_HISTORY;
+	if (state->track_hist_count < TRACK_HISTORY)
+		state->track_hist_count++;
 }
 
-static int normalize_level(int raw, int limiter)
+static int normalize_track_slot(struct visualizer_state *state, int slot,
+				int raw)
 {
-	if (limiter < 1)
-		limiter = 1;
-	return clamp_int((raw * 960) / limiter, 0, 1024);
+	int floor = 4096;
+	int peak = 0;
+	int range;
+	int i;
+
+	raw = clamp_int(raw, 0, 4096);
+	if (state->track_hist_count <= 0)
+		push_track_history(state, &(struct vis_levels) {
+			.overall = raw,
+			.running = true,
+		});
+
+	for (i = 0; i < state->track_hist_count; i++) {
+		int value = state->track_history[slot][i];
+
+		if (value < floor)
+			floor = value;
+		if (value > peak)
+			peak = value;
+	}
+
+	if (floor > raw)
+		floor = raw;
+	if (peak < raw)
+		peak = raw;
+
+	if (peak - floor < TRACK_MIN_RANGE) {
+		peak = floor + TRACK_MIN_RANGE;
+		if (peak > 4096) {
+			peak = 4096;
+			floor = peak - TRACK_MIN_RANGE;
+		}
+	}
+
+	state->track_floor[slot] = floor;
+	state->track_peak[slot] = peak;
+
+	raw -= floor;
+	if (raw < 0)
+		raw = 0;
+
+	range = peak - floor;
+	if (range < 1)
+		range = 1;
+	return clamp_int((raw * 1024) / range, 0, 1024);
+}
+
+static void reset_track_envelope(struct visualizer_state *state)
+{
+	memset(state->track_floor, 0, sizeof(state->track_floor));
+	memset(state->track_peak, 0, sizeof(state->track_peak));
+	memset(state->track_history, 0, sizeof(state->track_history));
+	state->track_hist_pos = 0;
+	state->track_hist_count = 0;
+	state->instant_overall = 0;
+	memset(state->instant_bands, 0, sizeof(state->instant_bands));
+	state->smooth_overall = 0;
+	memset(state->smooth_bands, 0, sizeof(state->smooth_bands));
+	state->beat_flash = 0;
+	state->frame_smooth_valid = false;
 }
 
 static void update_smoothed_levels(struct visualizer_state *state,
 				   const struct vis_levels *levels)
 {
-	int limiter = update_limiter(state, levels);
+	int previous_low = state->smooth_bands[0];
+	int low_delta;
 	int i;
 
+	if (levels->updated && state->last_level_seq &&
+	    levels->updated < state->last_level_seq)
+		reset_track_envelope(state);
+	state->last_level_seq = levels->updated;
+
+	push_track_history(state, levels);
+
+	state->instant_overall = normalize_track_slot(
+		state, VIS_OVERALL_SLOT, levels->overall);
 	state->smooth_overall = clamp_int(
-		smooth_level(state->smooth_overall,
-			     normalize_level(levels->overall, limiter)),
+		smooth_level(state->smooth_overall, state->instant_overall),
 		0, 1024);
 	for (i = 0; i < VIS_BANDS; i++) {
+		state->instant_bands[i] = normalize_track_slot(
+			state, i, levels->bands[i]);
 		state->smooth_bands[i] = clamp_int(
 			smooth_level(state->smooth_bands[i],
-				     normalize_level(levels->bands[i],
-						     limiter)),
+				     state->instant_bands[i]),
 			0, 1024);
 	}
-}
 
-static void add_fluid_injection(struct visualizer_state *state, int count,
-				int center, int width, int amount)
-{
-	int d;
+	low_delta = state->instant_bands[0] - previous_low;
+	if (low_delta > 150 && state->instant_bands[0] > 320) {
+		int flash = clamp_int(low_delta * 2, 0, 1024);
 
-	width = clamp_int(width, 0, count / 3);
-	amount = clamp_int(amount, 0, 1024);
-
-	for (d = -width; d <= width; d++) {
-		int dist = abs_int(d);
-		int pos = (center + d + count) % count;
-		int local = amount * (width + 1 - dist) / (width + 1);
-
-		state->fluid[pos] = clamp_int(state->fluid[pos] + local,
-					      0, 2048);
+		if (flash > state->beat_flash)
+			state->beat_flash = flash;
 	}
 }
 
-static void step_fluid(struct visualizer_state *state, int count, int phase,
-		       bool active)
+static uint8_t scaled_channel(int value, int max_brightness)
 {
-	int next_fluid[MAX_LEDS];
-	int next_velocity[MAX_LEDS];
-	int center = phase % count;
-	int width;
-	int inject;
+	value = clamp_int(value, 0, 255);
+	value = (value * max_brightness) / 255;
+	return (uint8_t)clamp_int(value, 0, 255);
+}
+
+static int expand_level(int value)
+{
+	value = clamp_int(value, 0, 1024);
+	return clamp_int((value * value) / 768, 0, 1024);
+}
+
+static uint32_t visualizer_rand(struct visualizer_state *state)
+{
+	if (!state->rng)
+		state->rng = (uint32_t)monotonic_ms() ^ (uint32_t)getpid() ^
+			     0x9e3779b9U;
+
+	state->rng ^= state->rng << 13;
+	state->rng ^= state->rng >> 17;
+	state->rng ^= state->rng << 5;
+	return state->rng;
+}
+
+static int rand_range(struct visualizer_state *state, int min, int max)
+{
+	uint32_t value;
+
+	if (max <= min)
+		return min;
+	value = visualizer_rand(state);
+	return min + (int)(value % (uint32_t)(max - min + 1));
+}
+
+static int jittered(struct visualizer_state *state, int base, int amount)
+{
+	return clamp_int(base + rand_range(state, -amount, amount), 0, 255);
+}
+
+static void set_palette_color(int palette[VIS_BANDS][RGB_CHANNELS],
+			      int band, int r, int g, int b)
+{
+	palette[band][0] = clamp_int(r, 0, 255);
+	palette[band][1] = clamp_int(g, 0, 255);
+	palette[band][2] = clamp_int(b, 0, 255);
+}
+
+static void choose_palette_target(struct visualizer_state *state, int fps)
+{
+	static const int mid_anchors[][RGB_CHANNELS] = {
+		{ 70, 70, 220 },
+		{ 40, 155, 215 },
+		{ 150, 70, 220 },
+		{ 45, 185, 120 },
+		{ 200, 80, 165 },
+	};
+	static const int high_anchors[][RGB_CHANNELS] = {
+		{ 210, 245, 255 },
+		{ 245, 230, 255 },
+		{ 185, 255, 230 },
+		{ 255, 245, 210 },
+		{ 255, 220, 235 },
+	};
+	int mid = rand_range(state, 0,
+			     (int)(sizeof(mid_anchors) /
+				   sizeof(mid_anchors[0])) - 1);
+	int high = rand_range(state, 0,
+			      (int)(sizeof(high_anchors) /
+				    sizeof(high_anchors[0])) - 1);
+
+	set_palette_color(state->palette_target, 0,
+			  rand_range(state, 185, 255),
+			  rand_range(state, 32, 140),
+			  rand_range(state, 0, 70));
+	set_palette_color(state->palette_target, 1,
+			  jittered(state, mid_anchors[mid][0], 28),
+			  jittered(state, mid_anchors[mid][1], 28),
+			  jittered(state, mid_anchors[mid][2], 28));
+	set_palette_color(state->palette_target, 2,
+			  jittered(state, high_anchors[high][0], 18),
+			  jittered(state, high_anchors[high][1], 18),
+			  jittered(state, high_anchors[high][2], 18));
+
+	state->palette_ticks = rand_range(state, fps * 5, fps * 11);
+}
+
+static void update_palette(struct visualizer_state *state, int fps)
+{
+	int band;
+	int c;
+
+	if (fps < 1)
+		fps = DEFAULT_FPS;
+
+	if (!state->palette_ready) {
+		set_palette_color(state->palette, 0, 238, 74, 18);
+		set_palette_color(state->palette, 1, 64, 115, 220);
+		set_palette_color(state->palette, 2, 218, 246, 255);
+		memcpy(state->palette_target, state->palette,
+		       sizeof(state->palette));
+		state->palette_ticks = fps * 4;
+		state->palette_ready = true;
+	}
+
+	state->palette_ticks--;
+	if (state->palette_ticks <= 0)
+		choose_palette_target(state, fps);
+
+	for (band = 0; band < VIS_BANDS; band++) {
+		for (c = 0; c < RGB_CHANNELS; c++) {
+			state->palette[band][c] = smooth_toward(
+				state->palette[band][c],
+				state->palette_target[band][c], 80, 80);
+		}
+	}
+}
+
+static int circular_weight(int pos, int center, int count, int width)
+{
+	int dist = abs_int(pos - center);
+
+	if (dist > count / 2)
+		dist = count - dist;
+	if (dist > width)
+		return 0;
+	return ((width + 1 - dist) * 1024) / (width + 1);
+}
+
+static int wrap_phase(int value, int limit)
+{
+	if (limit <= 0)
+		return 0;
+	while (value < 0)
+		value += limit;
+	while (value >= limit)
+		value -= limit;
+	return value;
+}
+
+static int signed_speed(struct visualizer_state *state, int min, int max)
+{
+	int speed = rand_range(state, min, max);
+
+	if (visualizer_rand(state) & 1)
+		speed = -speed;
+	return speed;
+}
+
+static void choose_animation_target(struct visualizer_state *state, int fps)
+{
+	state->band_speed_target[0] = signed_speed(state, 3, 11);
+	state->band_speed_target[1] = signed_speed(state, 6, 18);
+	state->band_speed_target[2] = signed_speed(state, 10, 26);
+	state->animation_ticks = rand_range(state, fps * 4, fps * 10);
+}
+
+static void update_animation(struct visualizer_state *state, int count, int fps)
+{
+	int limit;
+	int band;
+
+	if (fps < 1)
+		fps = DEFAULT_FPS;
+	if (count <= 0)
+		return;
+
+	limit = count * ANIM_PHASE_SCALE;
+	if (!state->animation_ready) {
+		for (band = 0; band < VIS_BANDS; band++) {
+			state->band_phase[band] =
+				rand_range(state, 0, limit - 1);
+		}
+		choose_animation_target(state, fps);
+		memcpy(state->band_speed, state->band_speed_target,
+		       sizeof(state->band_speed));
+		state->animation_ready = true;
+	}
+
+	state->animation_ticks--;
+	if (state->animation_ticks <= 0)
+		choose_animation_target(state, fps);
+
+	for (band = 0; band < VIS_BANDS; band++) {
+		state->band_speed[band] = smooth_toward(
+			state->band_speed[band], state->band_speed_target[band],
+			120, 120);
+		state->band_phase[band] = wrap_phase(
+			state->band_phase[band] + state->band_speed[band],
+			limit);
+	}
+}
+
+static int circular_weight_q10(int pos, int center_q10, int count,
+			       int width_leds)
+{
+	int limit = count * ANIM_PHASE_SCALE;
+	int pos_q10 = pos * ANIM_PHASE_SCALE;
+	int width_q10 = width_leds * ANIM_PHASE_SCALE;
+	int dist;
+
+	if (count <= 0 || width_q10 <= 0)
+		return 0;
+
+	center_q10 = wrap_phase(center_q10, limit);
+	dist = abs_int(pos_q10 - center_q10);
+	if (dist > limit / 2)
+		dist = limit - dist;
+	if (dist > width_q10)
+		return 0;
+
+	return ((width_q10 + ANIM_PHASE_SCALE - dist) * 1024) /
+	       (width_q10 + ANIM_PHASE_SCALE);
+}
+
+static int rotating_band_weight(const struct visualizer_state *state, int band,
+				int pos, int count, int lobes,
+				int width_leds)
+{
+	int limit = count * ANIM_PHASE_SCALE;
+	int spacing;
+	int best = 0;
+	int lobe;
+
+	if (count <= 0 || lobes <= 0)
+		return 0;
+
+	spacing = limit / lobes;
+	for (lobe = 0; lobe < lobes; lobe++) {
+		int center = state->band_phase[band] + lobe * spacing;
+		int weight = circular_weight_q10(pos, center, count,
+						 width_leds);
+
+		if (weight > best)
+			best = weight;
+	}
+
+	return best;
+}
+
+static int band_mix_channel(int level, int color, int spatial,
+			    int spatial_base, int denom)
+{
+	int mix;
+
+	level = clamp_int(level, 0, 1024);
+	color = clamp_int(color, 0, 255);
+	spatial = clamp_int(spatial, 0, 1280);
+	spatial_base = clamp_int(spatial_base, 0, 1280);
+	if (denom < 1)
+		denom = 1;
+
+	mix = (level * color * (spatial_base + spatial)) /
+	      (1024 * denom);
+	return clamp_int(mix, 0, 255);
+}
+
+static void choose_texture_target(struct visualizer_state *state, int count,
+				  int fps)
+{
+	int blobs;
+	int i;
+	int b;
+
+	if (count <= 0)
+		return;
+
+	for (i = 0; i < count; i++)
+		state->texture_target[i] = rand_range(state, 760, 1120);
+
+	blobs = rand_range(state, 2, 5);
+	for (b = 0; b < blobs; b++) {
+		int center = rand_range(state, 0, count - 1);
+		int width = rand_range(state, 2, count / 4 > 2 ?
+				       count / 4 : 2);
+		int amount = rand_range(state, -220, 320);
+
+		for (i = 0; i < count; i++) {
+			int weight = circular_weight(i, center, count, width);
+
+			state->texture_target[i] = clamp_int(
+				state->texture_target[i] +
+				(amount * weight) / 1024, 520, 1280);
+		}
+	}
+
+	state->texture_ticks = rand_range(state, fps * 3, fps * 7);
+}
+
+static void update_texture(struct visualizer_state *state, int count, int fps)
+{
 	int i;
 
-	for (i = 0; i < count; i++) {
-		int left = state->fluid[(i + count - 1) % count];
-		int right = state->fluid[(i + 1) % count];
-		int here = state->fluid[i];
-		int velocity = state->velocity[i];
-		int lap = left + right - 2 * here;
-		int decay;
+	if (fps < 1)
+		fps = DEFAULT_FPS;
 
-		velocity += lap / 8;
-		velocity -= velocity / 9;
-		velocity = clamp_int(velocity, -1024, 1024);
-
-		here += velocity;
-		decay = here / 28 + 1;
-		here -= decay;
-		if (here < 0) {
-			here = 0;
-			velocity = 0;
+	if (!state->texture_ready) {
+		for (i = 0; i < count; i++) {
+			state->texture[i] = 1024;
+			state->texture_target[i] = 1024;
 		}
-
-		next_fluid[i] = clamp_int(here, 0, 1600);
-		next_velocity[i] = velocity;
+		state->texture_ticks = fps * 2;
+		state->texture_ready = true;
 	}
 
-	memcpy(state->fluid, next_fluid, count * sizeof(state->fluid[0]));
-	memcpy(state->velocity, next_velocity,
-	       count * sizeof(state->velocity[0]));
+	state->texture_ticks--;
+	if (state->texture_ticks <= 0)
+		choose_texture_target(state, count, fps);
 
-	if (!active) {
-		add_fluid_injection(state, count, center, 0, 18);
-		return;
+	for (i = 0; i < count; i++) {
+		state->texture[i] = smooth_toward(
+			state->texture[i], state->texture_target[i], 90, 90);
 	}
-
-	width = 1 + (state->smooth_bands[0] * count) / 4096;
-	inject = state->smooth_overall;
-	add_fluid_injection(state, count, center, width, inject);
-
-	add_fluid_injection(state, count, (center + count / 3) % count, 1,
-			    state->smooth_bands[1] / 2);
-	add_fluid_injection(state, count, (center + (2 * count) / 3) % count,
-			    0, state->smooth_bands[2] / 2);
 }
 
 static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
@@ -701,24 +1154,120 @@ static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
 			       const struct options *opts,
 			       struct visualizer_state *state)
 {
-	int hue_bias = (state->smooth_bands[2] - state->smooth_bands[0]) / 8;
-	int ambient = active ? state->smooth_overall / 32 : 0;
+	int base = active ? 0 : opts->idle_brightness;
+	int pulse_raw;
+	int body_raw;
+	int sparkle_raw;
+	int pulse;
+	int body;
+	int sparkle;
+	int bass_width;
+	int mid_width;
+	int high_width;
 	int i;
 
-	step_fluid(state, count, phase, active);
+	(void)phase;
+	update_palette(state, opts->fps);
+	update_texture(state, count, opts->fps);
+	update_animation(state, count, opts->fps);
+
+	pulse_raw = (state->instant_bands[0] * 4 +
+		     state->smooth_bands[0] +
+		     state->instant_overall +
+		     state->beat_flash * 3) / 9;
+	body_raw = (state->instant_bands[1] * 3 +
+		    state->smooth_bands[1]) / 4;
+	sparkle_raw = (state->instant_bands[2] * 3 +
+		       state->smooth_bands[2]) / 4;
+
+	pulse = expand_level(clamp_int((pulse_raw - 170) * 1024 / 854,
+				       0, 1024));
+	body = expand_level(clamp_int((body_raw - 240) * 1024 / 784,
+				      0, 1024));
+	sparkle = expand_level(clamp_int((sparkle_raw - 260) * 1024 / 764,
+					 0, 1024));
+
+	bass_width = count / 5;
+	if (bass_width < 4)
+		bass_width = 4;
+	mid_width = count / 7;
+	if (mid_width < 3)
+		mid_width = 3;
+	high_width = count / 10;
+	if (high_width < 2)
+		high_width = 2;
 
 	for (i = 0; i < count; i++) {
-		int height = clamp_int(state->fluid[i], 0, 1024);
-		int brightness = opts->idle_brightness + ambient;
-		uint8_t hue;
+		int bass_weight = rotating_band_weight(state, 0, i, count, 2,
+						       bass_width);
+		int mid_weight = rotating_band_weight(state, 1, i, count, 3,
+						      mid_width);
+		int high_weight = rotating_band_weight(state, 2, i, count, 5,
+						       high_width);
+		int scale = state->texture[i];
+		int r;
+		int g;
+		int b;
 
-		brightness += (height * (opts->brightness -
-					 opts->idle_brightness)) / 1024;
-		brightness = clamp_int(brightness, 0, opts->brightness);
+		/* Bass stays full-ring; mids and highs add moving color bands. */
+		r = base +
+		    band_mix_channel(pulse, state->palette[0][0],
+				     bass_weight / 2, 760, 1024) +
+		    band_mix_channel(body, state->palette[1][0],
+				     mid_weight, 180, 1536) +
+		    band_mix_channel(sparkle, state->palette[2][0],
+				     high_weight, 80, 1024);
+		g = base +
+		    band_mix_channel(pulse, state->palette[0][1],
+				     bass_weight / 2, 760, 1024) +
+		    band_mix_channel(body, state->palette[1][1],
+				     mid_weight, 180, 1536) +
+		    band_mix_channel(sparkle, state->palette[2][1],
+				     high_weight, 80, 1024);
+		b = base +
+		    band_mix_channel(pulse, state->palette[0][2],
+				     bass_weight / 2, 760, 1024) +
+		    band_mix_channel(body, state->palette[1][2],
+				     mid_weight, 180, 1536) +
+		    band_mix_channel(sparkle, state->palette[2][2],
+				     high_weight, 80, 1024);
 
-		hue = (uint8_t)((phase * 4 + (i * 256) / count + hue_bias) &
-				0xff);
-		frame[i] = scale_color(hue, brightness);
+		frame[i].rgb[0] = scaled_channel((r * scale) / 1024,
+						 opts->brightness);
+		frame[i].rgb[1] = scaled_channel((g * scale) / 1024,
+						 opts->brightness);
+		frame[i].rgb[2] = scaled_channel((b * scale) / 1024,
+						 opts->brightness);
+	}
+
+	if (state->beat_flash > 0)
+		state->beat_flash = clamp_int(state->beat_flash -
+					      state->beat_flash / 9 - 2,
+					      0, 1024);
+}
+
+static void smooth_rgb_frame(struct visualizer_state *state,
+			     struct avr_led_rgb_vals *frame, int count)
+{
+	int i;
+
+	if (!state->frame_smooth_valid) {
+		memcpy(state->smooth_frame, frame, count * sizeof(*frame));
+		state->frame_smooth_valid = true;
+		return;
+	}
+
+	for (i = 0; i < count; i++) {
+		int c;
+
+		for (c = 0; c < 3; c++) {
+			int current = state->smooth_frame[i].rgb[c];
+			int target = frame[i].rgb[c];
+			int next = smooth_toward(current, target, 1, 9);
+
+			state->smooth_frame[i].rgb[c] = (uint8_t)next;
+			frame[i].rgb[c] = (uint8_t)next;
+		}
 	}
 }
 
@@ -762,7 +1311,7 @@ static int run_visualizer(int fd, const struct options *opts)
 {
 	struct avr_led_rgb_vals frame[MAX_LEDS];
 	struct vis_reader vis = { .fd = -1 };
-	struct visualizer_state state = { .limiter = 512 };
+	struct visualizer_state state = { 0 };
 	int count = led_get_count(fd);
 	int interval_us;
 	int phase = 0;
@@ -781,19 +1330,24 @@ static int run_visualizer(int fd, const struct options *opts)
 		bool active = false;
 
 		memset(&levels, 0, sizeof(levels));
-		if (vis.fd < 0) {
-			if (vis_open(&vis, opts->shm) < 0) {
-				missing_ticks++;
-			} else {
-				missing_ticks = 0;
+		if (read_level_file(opts->levels, opts->gain, &levels) == 0) {
+			ret = 0;
+			missing_ticks = 0;
+		} else {
+			if (vis.fd < 0) {
+				if (vis_open(&vis, opts->shm) < 0) {
+					missing_ticks++;
+				} else {
+					missing_ticks = 0;
+				}
 			}
-		}
 
-		if (vis.fd >= 0) {
-			ret = vis_read_levels(&vis, opts->gain, &levels);
-			if (ret < 0) {
-				vis_close(&vis);
-				missing_ticks++;
+			if (vis.fd >= 0) {
+				ret = vis_read_levels(&vis, opts->gain, &levels);
+				if (ret < 0) {
+					vis_close(&vis);
+					missing_ticks++;
+				}
 			}
 		}
 
@@ -819,6 +1373,7 @@ static int run_visualizer(int fd, const struct options *opts)
 			break;
 		}
 
+		smooth_rgb_frame(&state, frame, count);
 		if (led_set_range(fd, 0, (uint8_t)count, frame) < 0)
 			break;
 
@@ -846,6 +1401,8 @@ static int parse_args(int argc, char **argv, struct options *opts)
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
 			opts->device = argv[++i];
+		} else if (strcmp(argv[i], "--levels") == 0 && i + 1 < argc) {
+			opts->levels = argv[++i];
 		} else if (strcmp(argv[i], "--shm") == 0 && i + 1 < argc) {
 			opts->shm = argv[++i];
 		} else if (strcmp(argv[i], "--fps") == 0 && i + 1 < argc) {

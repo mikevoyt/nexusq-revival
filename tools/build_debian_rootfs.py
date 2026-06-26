@@ -570,6 +570,13 @@ else
     echo "led-ring: /dev/leds missing"
 fi
 
+if [ -s /run/nexusq-audio-levels ]; then
+    echo "audio-levels: /run/nexusq-audio-levels present"
+    sed -n '1,9p' /run/nexusq-audio-levels 2>/dev/null || true
+else
+    echo "audio-levels: /run/nexusq-audio-levels missing"
+fi
+
 if ps | grep '[n]q-led-visualiz' >/dev/null 2>&1; then
     echo "led-visualizer: running"
 else
@@ -625,6 +632,7 @@ Options:
   --cancel-autoreboot      Cancel the current safety return-to-fastboot timer
   --start-network          Start or restart Wi-Fi, DHCP, and Dropbear
   --start-squeezelite      Start or restart the Music Assistant player endpoint
+  --start-led-visualizer   Start or restart the LED-ring visualizer
   --start-nfc-jukebox      Start or restart the NFC SomaFM jukebox
   --status                 Print appliance status after changes
   -h, --help               Show this help
@@ -669,6 +677,7 @@ clear_rng=0
 cancel_autoreboot=0
 start_network=0
 start_squeezelite=0
+start_led_visualizer=0
 start_nfc_jukebox=0
 show_status=0
 
@@ -749,6 +758,10 @@ while [ "$#" -gt 0 ]; do
             start_squeezelite=1
             shift
             ;;
+        --start-led-visualizer)
+            start_led_visualizer=1
+            shift
+            ;;
         --start-nfc-jukebox)
             start_nfc_jukebox=1
             shift
@@ -798,11 +811,15 @@ if [ "$start_squeezelite" -eq 1 ]; then
     /sbin/nq-start-squeezelite
 fi
 
+if [ "$start_led_visualizer" -eq 1 ]; then
+    /sbin/nq-start-led-visualizer
+fi
+
 if [ "$start_nfc_jukebox" -eq 1 ]; then
     /sbin/nq-start-nfc-jukebox
 fi
 
-if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ] || [ "$start_squeezelite" -eq 1 ] || [ "$start_nfc_jukebox" -eq 1 ]; then
+if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ] || [ "$start_squeezelite" -eq 1 ] || [ "$start_led_visualizer" -eq 1 ] || [ "$start_nfc_jukebox" -eq 1 ]; then
     /sbin/nq-appliance-status
 fi
 """,
@@ -1613,16 +1630,18 @@ trap '' HUP
 echo "[nq-led-visualizer] starting"
 date 2>/dev/null || true
 
-for env in /etc/nexusq/led-visualizer.env /run/nexusq/led-visualizer.env /tmp/led-visualizer.env; do
+for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env /etc/nexusq/led-visualizer.env /run/nexusq/led-visualizer.env /tmp/led-visualizer.env; do
     [ -r "$env" ] || continue
     # shellcheck disable=SC1090
     . "$env"
 done
 
-: "${NQ_LED_VISUALIZER_ENABLE:=0}"
+: "${NQ_LED_VISUALIZER_ENABLE:=1}"
 : "${NQ_LED_VISUALIZER_DEVICE:=/dev/leds}"
+: "${NQ_LED_VISUALIZER_SOURCE:=auto}"
+: "${NQ_LED_VISUALIZER_LEVELS:=/run/nexusq-audio-levels}"
 : "${NQ_LED_VISUALIZER_SHM:=}"
-: "${NQ_LED_VISUALIZER_FPS:=20}"
+: "${NQ_LED_VISUALIZER_FPS:=60}"
 : "${NQ_LED_VISUALIZER_BRIGHTNESS:=255}"
 : "${NQ_LED_VISUALIZER_IDLE_BRIGHTNESS:=6}"
 : "${NQ_LED_VISUALIZER_GAIN:=8}"
@@ -1676,7 +1695,23 @@ set -- /usr/sbin/nq-led-visualizer \\
     --gain "$NQ_LED_VISUALIZER_GAIN" \\
     --style "$NQ_LED_VISUALIZER_STYLE"
 
-[ -z "$NQ_LED_VISUALIZER_SHM" ] || set -- "$@" --shm "$NQ_LED_VISUALIZER_SHM"
+case "$NQ_LED_VISUALIZER_SOURCE" in
+    levels|somafm)
+        [ -z "$NQ_LED_VISUALIZER_LEVELS" ] || set -- "$@" --levels "$NQ_LED_VISUALIZER_LEVELS"
+        ;;
+    squeezelite|shm)
+        [ -z "$NQ_LED_VISUALIZER_SHM" ] || set -- "$@" --shm "$NQ_LED_VISUALIZER_SHM"
+        ;;
+    auto|"")
+        [ -z "$NQ_LED_VISUALIZER_LEVELS" ] || set -- "$@" --levels "$NQ_LED_VISUALIZER_LEVELS"
+        [ -z "$NQ_LED_VISUALIZER_SHM" ] || set -- "$@" --shm "$NQ_LED_VISUALIZER_SHM"
+        ;;
+    *)
+        echo "[nq-led-visualizer] unknown source=$NQ_LED_VISUALIZER_SOURCE; using auto"
+        [ -z "$NQ_LED_VISUALIZER_LEVELS" ] || set -- "$@" --levels "$NQ_LED_VISUALIZER_LEVELS"
+        [ -z "$NQ_LED_VISUALIZER_SHM" ] || set -- "$@" --shm "$NQ_LED_VISUALIZER_SHM"
+        ;;
+esac
 
 echo "[nq-led-visualizer] exec: $*"
 if command -v setsid >/dev/null 2>&1; then
@@ -1857,9 +1892,15 @@ fi
 : "${NQ_PLAY_OUTPUT:=hw:0,0}"
 : "${NQ_PLAY_RATE:=48000}"
 : "${NQ_PLAY_ENCODING:=s16}"
+: "${NQ_PLAY_CHANNELS:=2}"
 : "${NQ_PLAY_DEVBUFFER:=0.5}"
 : "${NQ_PLAY_BUFFER:=1024}"
 : "${NQ_PLAY_PRELOAD:=1}"
+: "${NQ_PLAY_VISUALIZER_ENABLE:=0}"
+: "${NQ_PLAY_LEVELS:=/run/nexusq-audio-levels}"
+: "${NQ_PLAY_LEVEL_UPDATE_MS:=16}"
+: "${NQ_PLAY_APLAY_BUFFER_TIME_US:=80000}"
+: "${NQ_PLAY_APLAY_PERIOD_TIME_US:=20000}"
 
 if ! command -v mpg123 >/dev/null 2>&1; then
     echo "nq-play: mpg123 is not installed" >&2
@@ -1888,6 +1929,34 @@ if command -v amixer >/dev/null 2>&1; then
 
     preserve_value "$NQ_PLAY_MASTER_VOLUME" || \\
         amixer -q -c "$NQ_PLAY_MIXER_CARD" cset name="Master Volume" "$NQ_PLAY_MASTER_VOLUME" || true
+fi
+
+if [ "$NQ_PLAY_VISUALIZER_ENABLE" = "1" ] &&
+    [ "$NQ_PLAY_ENCODING" = "s16" ] &&
+    command -v nq-pcm-level-tap >/dev/null 2>&1 &&
+    command -v aplay >/dev/null 2>&1; then
+    mkdir -p "$(dirname "$NQ_PLAY_LEVELS")" 2>/dev/null || true
+    mpg123 \\
+        --no-control \\
+        -s \\
+        -r "$NQ_PLAY_RATE" \\
+        --resample fine \\
+        -e s16 \\
+        --buffer "$NQ_PLAY_BUFFER" \\
+        --preload "$NQ_PLAY_PRELOAD" \\
+        "$@" |
+    nq-pcm-level-tap \\
+        --levels "$NQ_PLAY_LEVELS" \\
+        --update-ms "$NQ_PLAY_LEVEL_UPDATE_MS" |
+    aplay \\
+        -q \\
+        -D "$NQ_PLAY_OUTPUT" \\
+        -f S16_LE \\
+        -r "$NQ_PLAY_RATE" \\
+        -c "$NQ_PLAY_CHANNELS" \\
+        --buffer-time="$NQ_PLAY_APLAY_BUFFER_TIME_US" \\
+        --period-time="$NQ_PLAY_APLAY_PERIOD_TIME_US"
+    exit $?
 fi
 
 exec mpg123 \\
@@ -2130,6 +2199,11 @@ done
 : "${NQ_SOMAFM_OUTPUT_RELEASE_DELAY:=0.45}"
 : "${NQ_SOMAFM_START_CHECK_DELAY:=0.02}"
 : "${NQ_SOMAFM_TIMING:=1}"
+: "${NQ_SOMAFM_VISUALIZER_ENABLE:=1}"
+: "${NQ_SOMAFM_VISUALIZER_LEVELS:=/run/nexusq-audio-levels}"
+: "${NQ_SOMAFM_VISUALIZER_UPDATE_MS:=16}"
+: "${NQ_SOMAFM_APLAY_BUFFER_TIME_US:=80000}"
+: "${NQ_SOMAFM_APLAY_PERIOD_TIME_US:=20000}"
 : "${NQ_SOMAFM_JUKEBOX_STREAM:=0}"
 : "${NQ_SOMAFM_JUKEBOX_URL:=}"
 : "${NQ_SOMAFM_SELECT_PREFIX:=}"
@@ -2292,6 +2366,8 @@ stop_players() {
     elif [ "$NQ_SOMAFM_STOP_ORPHAN_PLAYERS" = "1" ]; then
         stop_proc_name mpg123
     fi
+    stop_proc_name nq-pcm-level-tap
+    stop_proc_name aplay
     if [ "$NQ_SOMAFM_STOP_SQUEEZELITE" = "1" ]; then
         if [ -s /run/nq-squeezelite.pid ]; then
             stop_pid_file /run/nq-squeezelite.pid
@@ -2337,6 +2413,11 @@ start_jukebox_stream_player() {
         export NQ_PLAY_DEVBUFFER="$NQ_SOMAFM_DEVBUFFER"
         export NQ_PLAY_BUFFER="$NQ_SOMAFM_BUFFER"
         export NQ_PLAY_PRELOAD="$NQ_SOMAFM_PRELOAD"
+        export NQ_PLAY_VISUALIZER_ENABLE="$NQ_SOMAFM_VISUALIZER_ENABLE"
+        export NQ_PLAY_LEVELS="$NQ_SOMAFM_VISUALIZER_LEVELS"
+        export NQ_PLAY_LEVEL_UPDATE_MS="$NQ_SOMAFM_VISUALIZER_UPDATE_MS"
+        export NQ_PLAY_APLAY_BUFFER_TIME_US="$NQ_SOMAFM_APLAY_BUFFER_TIME_US"
+        export NQ_PLAY_APLAY_PERIOD_TIME_US="$NQ_SOMAFM_APLAY_PERIOD_TIME_US"
         while :; do
             /usr/bin/nq-play "$NQ_SOMAFM_JUKEBOX_URL" &
             player_pid="$!"
@@ -2473,6 +2554,11 @@ timing "stop players done"
     export NQ_PLAY_DEVBUFFER="$NQ_SOMAFM_DEVBUFFER"
     export NQ_PLAY_BUFFER="$NQ_SOMAFM_BUFFER"
     export NQ_PLAY_PRELOAD="$NQ_SOMAFM_PRELOAD"
+    export NQ_PLAY_VISUALIZER_ENABLE="$NQ_SOMAFM_VISUALIZER_ENABLE"
+    export NQ_PLAY_LEVELS="$NQ_SOMAFM_VISUALIZER_LEVELS"
+    export NQ_PLAY_LEVEL_UPDATE_MS="$NQ_SOMAFM_VISUALIZER_UPDATE_MS"
+    export NQ_PLAY_APLAY_BUFFER_TIME_US="$NQ_SOMAFM_APLAY_BUFFER_TIME_US"
+    export NQ_PLAY_APLAY_PERIOD_TIME_US="$NQ_SOMAFM_APLAY_PERIOD_TIME_US"
     if [ "$NQ_SOMAFM_RESTART" != "1" ]; then
         exec /usr/bin/nq-play "$url"
     fi
@@ -3052,7 +3138,7 @@ for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
     . "$env"
 done
 
-: "${NQ_NFC_JUKEBOX_ENABLE:=0}"
+: "${NQ_NFC_JUKEBOX_ENABLE:=1}"
 : "${NQ_NFC_TAGS:=/etc/nexusq/somafm-tags.conf}"
 : "${NQ_NFC_UNKNOWN_LOG:=/run/nexusq-nfc-unknown-tags.log}"
 : "${NQ_NFC_COOLDOWN_SECONDS:=5}"
@@ -3232,7 +3318,7 @@ for env in /etc/nexusq/somafm.env /run/nexusq/somafm.env /tmp/somafm.env; do
     . "$env"
 done
 
-: "${NQ_NFC_JUKEBOX_ENABLE:=0}"
+: "${NQ_NFC_JUKEBOX_ENABLE:=1}"
 : "${NQ_NFC_JUKEBOX_RESTART:=0}"
 
 pid_live() {
@@ -3427,6 +3513,13 @@ if [ -e /dev/leds ]; then
     echo "led-ring: /dev/leds present"
 else
     echo "led-ring: /dev/leds missing"
+fi
+
+if [ -s /run/nexusq-audio-levels ]; then
+    echo "audio-levels: /run/nexusq-audio-levels present"
+    sed -n '1,9p' /run/nexusq-audio-levels 2>/dev/null || true
+else
+    echo "audio-levels: /run/nexusq-audio-levels missing"
 fi
 
 if ps | grep '[n]q-led-visualiz' >/dev/null 2>&1; then
@@ -3694,6 +3787,7 @@ Runtime-only test files in /run/nexusq override these persistent files.
         (root / "artifacts/bin/nq-adbd-lite", rootfs / "usr/sbin/nq-adbd-lite"),
         (root / "artifacts/bin/nq-avr-i2c", rootfs / "usr/sbin/nq-avr-i2c"),
         (root / "artifacts/bin/nq-led-visualizer", rootfs / "usr/sbin/nq-led-visualizer"),
+        (root / "artifacts/bin/nq-pcm-level-tap", rootfs / "usr/bin/nq-pcm-level-tap"),
         (root / "artifacts/bin/nq-nfc-poll", rootfs / "usr/bin/nq-nfc-poll"),
         (root / "build/seed-rng-arm", rootfs / "sbin/seed-rng"),
     ):

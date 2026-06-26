@@ -5,9 +5,10 @@
 The idea fits the Nexus Q well: printed SomaFM channel cards become the physical
 UI, and the Q turns a tap into immediate radio playback.
 
-The practical first prototype is a local SomaFM player plus an NFC tag listener.
+The practical appliance path is a local SomaFM player plus an NFC tag listener.
 It uses `mpg123` through the existing `nq-play` wrapper, so streams are resampled
 to the validated 48 kHz TAS5713 path. It does not require Music Assistant.
+Squeezelite remains available as an opt-in alternative for Music Assistant.
 
 The original Nexus Q hardware has an NXP PN544 NFC controller on the mezzanine
 board. The Linux 6.6 device tree now describes that built-in controller using
@@ -42,6 +43,9 @@ The rootfs includes:
   - Stops prior local `mpg123` playback.
   - Stops Squeezelite by default so ALSA is available.
   - Starts the SomaFM stream through `nq-play`.
+  - Enables the standalone visualizer path by default: decoded PCM passes
+    through `nq-pcm-level-tap`, which publishes `/run/nexusq-audio-levels`
+    before audio reaches `aplay`.
   - Use `nq-somafm-play --list` for current station ids.
 - `nq-nfc-scan`
   - Prefers the built-in PN544 through Linux NFC generic netlink.
@@ -55,9 +59,11 @@ The rootfs includes:
   - Low-level built-in PN544 test helper.
   - Powers the kernel NFC device, starts a poll, and prints target UID data.
 - `nq-nfc-ack`
-  - Plays the short tap-confirmation chime before SomaFM playback starts.
+  - Plays the short tap-confirmation chime before SomaFM playback starts unless
+    `NQ_NFC_ACK_ENABLE=0`.
 - `/sbin/nq-start-nfc-jukebox`
-  - Starts an opt-in NFC polling loop.
+  - Starts the NFC polling loop. Set `NQ_NFC_JUKEBOX_ENABLE=0` when the Q
+    should ignore cards, for example in a dedicated Squeezelite setup.
   - Maps tag UID to station id using `/etc/nexusq/somafm-tags.conf`.
 
 ## First Manual Test
@@ -69,6 +75,7 @@ nq-somafm-play --help
 nq-somafm-play --list
 nq-somafm-url groovesalad
 nq-somafm-play groovesalad
+cat /run/nexusq-audio-levels
 tail -n 80 /run/nexusq-somafm.log
 ```
 
@@ -152,9 +159,11 @@ Common examples: `groovesalad`, `dronezone`, `secretagent`, `spacestation`,
 `beatblender`, `bootliquor`, `indiepop`, `lush`, `u80s`, `reggae`, `synphaera`,
 `tikitime`, and `bossa`.
 
-## Enable The Jukebox
+## Configure The Jukebox
 
-Create runtime config:
+The jukebox and SomaFM visualizer are enabled by default in the appliance
+scripts. Create runtime config when you want explicit, reproducible behavior or
+want to preserve current mixer volume:
 
 ```sh
 cat >/run/nexusq/somafm.env <<'EOF'
@@ -167,6 +176,8 @@ NQ_NFC_ACK_ENABLE=1
 NQ_SOMAFM_STOP_SQUEEZELITE=1
 NQ_SOMAFM_MASTER_VOLUME=preserve
 NQ_SOMAFM_SPEAKER_VOLUME=preserve
+NQ_SOMAFM_VISUALIZER_ENABLE=1
+NQ_SOMAFM_VISUALIZER_LEVELS=/run/nexusq-audio-levels
 EOF
 ```
 
@@ -175,6 +186,7 @@ Persist the config and start the listener:
 ```sh
 /sbin/nq-provision \
   --somafm /run/nexusq/somafm.env \
+  --start-led-visualizer \
   --start-nfc-jukebox \
   --status
 ```
@@ -183,6 +195,7 @@ Check logs:
 
 ```sh
 nq-player-status
+cat /run/nexusq-audio-levels
 cat /run/nexusq-nfc-jukebox.log
 cat /run/nexusq-nfc-unknown-tags.log
 ```

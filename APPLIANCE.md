@@ -21,6 +21,7 @@ Persistent files:
 - `/etc/nexusq/wpa_supplicant.conf`
 - `/etc/nexusq/authorized_keys`
 - `/etc/nexusq/squeezelite.env`
+- `/etc/nexusq/led-visualizer.env`
 - `/etc/nexusq/somafm.env`
 - `/etc/nexusq/somafm-tags.conf`
 - `/etc/nexusq/adbd.env`
@@ -113,9 +114,10 @@ protocol.
 
 ## Music Assistant Player
 
-The appliance rootfs can act as a Music Assistant Squeezelite player endpoint.
-Run the Music Assistant server on a supported 64-bit host and keep it on the
-same local network as the Q.
+The appliance rootfs can also act as a Music Assistant Squeezelite player
+endpoint. This is an opt-in alternative to the standalone SomaFM jukebox. Run
+the Music Assistant server on a supported 64-bit host and keep it on the same
+local network as the Q.
 
 Persist an opt-in Squeezelite config:
 
@@ -174,14 +176,22 @@ Music Assistant setup notes.
 
 ## SomaFM NFC Jukebox
 
-The appliance rootfs also includes an opt-in SomaFM jukebox prototype. It maps
-NFC tag UIDs to SomaFM station ids and starts local `nq-play`/`mpg123` stream
-playback:
+The appliance rootfs defaults toward the standalone SomaFM jukebox. It maps NFC
+tag UIDs to SomaFM station ids and starts local `nq-play`/`mpg123` stream
+playback. The LED visualizer starts locally and follows SomaFM audio through
+`/run/nexusq-audio-levels`.
+
+Create config when you want to tune timings, preserve mixer values, or persist
+a reproducible card deck:
 
 ```sh
 cat >/run/nexusq/somafm.env <<'EOF'
 NQ_NFC_JUKEBOX_ENABLE=1
+NQ_NFC_JUKEBOX_RESTART=1
 NQ_SOMAFM_STOP_SQUEEZELITE=1
+NQ_SOMAFM_MASTER_VOLUME=preserve
+NQ_SOMAFM_SPEAKER_VOLUME=preserve
+NQ_SOMAFM_VISUALIZER_ENABLE=1
 EOF
 
 cat >/run/nexusq/somafm-tags.conf <<'EOF'
@@ -192,14 +202,15 @@ EOF
 /sbin/nq-provision \
   --somafm /run/nexusq/somafm.env \
   --somafm-tags /run/nexusq/somafm-tags.conf \
+  --start-led-visualizer \
   --start-nfc-jukebox \
   --status
 ```
 
 Use `nq-somafm-play --list` to see station ids, `nq-nfc-scan` to learn a card
 UID, `nq-somafm-play groovesalad` to test playback without NFC, and
-`nq-player-status` to inspect logs. Built-in PN544 load-on-demand bring-up and
-external-reader fallback details are in
+`nq-player-status` to inspect logs and visualizer levels. Built-in PN544
+load-on-demand bring-up and external-reader fallback details are in
 [NFC_JUKEBOX.md](NFC_JUKEBOX.md).
 
 ## Host-Side Provisioning
@@ -220,8 +231,9 @@ python3 tools/run_debian_serial_test.py \
 ```
 
 `--leave-running` cancels the safety timer and does not ask the target to return
-to fastboot at the end. Omit it during risky tests. Omit
-`--enable-squeezelite` when you only want Wi-Fi/SSH provisioning.
+to fastboot at the end. Omit it during risky tests. Use `--enable-squeezelite`
+only when this Q should join Music Assistant instead of acting as a standalone
+SomaFM jukebox.
 
 ## Recovery
 
