@@ -32,6 +32,10 @@
 #define DEFAULT_IDLE_BRIGHTNESS 6
 #define DEFAULT_GAIN 8
 #define DEFAULT_STYLE VIS_STYLE_PULSE
+#define DEFAULT_SWIRL_ENABLE 1
+#define DEFAULT_SWIRL_MIN_MS 10000
+#define DEFAULT_SWIRL_MAX_MS 15000
+#define DEFAULT_SWIRL_DURATION_MS 2200
 #define DEFAULT_SYNC_STATE_FILE "/run/nexusq-led-visualizer-state"
 #define DEFAULT_SYNC_DELAY_FILE "/run/nexusq-led-sync-delay-ms"
 #define LEVEL_DELAY_QUEUE 128
@@ -98,6 +102,10 @@ struct options {
 	int brightness;
 	int idle_brightness;
 	int gain;
+	int swirl_enable;
+	int swirl_min_ms;
+	int swirl_max_ms;
+	int swirl_duration_ms;
 	int sync_delay_ms;
 	const char *sync_delay_file;
 	uint8_t all_rgb[3];
@@ -163,12 +171,20 @@ struct visualizer_state {
 	int band_speed[VIS_BANDS];
 	int band_speed_target[VIS_BANDS];
 	int animation_ticks;
+	int swirl_next_ticks;
+	int swirl_ticks;
+	int swirl_total_ticks;
+	int swirl_phase;
+	int swirl_speed;
+	int swirl_width;
+	int swirl_rgb[RGB_CHANNELS];
 	uint32_t rng;
 	uint32_t last_level_seq;
 	uint32_t last_sync_state_seq;
 	bool palette_ready;
 	bool texture_ready;
 	bool animation_ready;
+	bool swirl_ready;
 	bool frame_smooth_valid;
 	struct avr_led_rgb_vals smooth_frame[MAX_LEDS];
 };
@@ -188,6 +204,8 @@ static void usage(const char *argv0)
 		"  %s [--device /dev/leds] [--levels PATH] [--shm PATH_OR_NAME] [--fps N]\n"
 		"     [--brightness 0..255] [--idle-brightness 0..255]\n"
 		"     [--gain N] [--style spectrum|pulse]\n"
+		"     [--swirl 0|1] [--swirl-min-ms N] [--swirl-max-ms N]\n"
+		"     [--swirl-duration-ms N]\n"
 		"     [--sync-delay-ms N] [--sync-delay-file PATH]\n"
 		"  %s --info [--device /dev/leds]\n"
 		"  %s --off [--device /dev/leds]\n"
@@ -1279,6 +1297,183 @@ static int rotating_band_weight(const struct visualizer_state *state, int band,
 	return best;
 }
 
+static int ms_to_ticks(int ms, int fps)
+{
+	long ticks;
+
+	if (fps < 1)
+		fps = DEFAULT_FPS;
+	if (ms < 0)
+		ms = 0;
+
+	ticks = ((long)ms * fps + 999) / 1000;
+	if (ticks < 1)
+		ticks = 1;
+	if (ticks > 60000)
+		ticks = 60000;
+	return (int)ticks;
+}
+
+static void schedule_next_swirl(struct visualizer_state *state,
+				const struct options *opts, int fps)
+{
+	int min_ticks = ms_to_ticks(opts->swirl_min_ms, fps);
+	int max_ticks = ms_to_ticks(opts->swirl_max_ms, fps);
+
+	if (max_ticks < min_ticks)
+		max_ticks = min_ticks;
+	state->swirl_next_ticks = rand_range(state, min_ticks, max_ticks);
+}
+
+static void start_swirl(struct visualizer_state *state,
+			const struct options *opts, int count, int fps)
+{
+	static const int swirl_colors[][RGB_CHANNELS] = {
+		{ 255, 238, 190 },
+		{ 68, 222, 255 },
+		{ 255, 86, 168 },
+		{ 134, 255, 118 },
+	};
+	int limit = count * ANIM_PHASE_SCALE;
+	int duration = ms_to_ticks(opts->swirl_duration_ms, fps);
+	int choice = rand_range(state, 0,
+				(int)(sizeof(swirl_colors) /
+				      sizeof(swirl_colors[0])) - 1);
+	int rotations = rand_range(state, 130, 220);
+	int c;
+
+	if (limit <= 0)
+		return;
+
+	state->swirl_ticks = duration;
+	state->swirl_total_ticks = duration;
+	state->swirl_phase = rand_range(state, 0, limit - 1);
+	state->swirl_speed = (limit * rotations) / (duration * 100);
+	if (state->swirl_speed < 1)
+		state->swirl_speed = 1;
+	if (visualizer_rand(state) & 1)
+		state->swirl_speed = -state->swirl_speed;
+
+	state->swirl_width = count / 10;
+	if (state->swirl_width < 2)
+		state->swirl_width = 2;
+	if (state->swirl_width > 6)
+		state->swirl_width = 6;
+
+	for (c = 0; c < RGB_CHANNELS; c++)
+		state->swirl_rgb[c] =
+			jittered(state, swirl_colors[choice][c], 18);
+}
+
+static void update_swirl(struct visualizer_state *state, int count, int fps,
+			 bool active, const struct options *opts)
+{
+	int limit;
+
+	if (!opts->swirl_enable || count <= 0) {
+		state->swirl_ticks = 0;
+		return;
+	}
+	if (!active) {
+		state->swirl_ready = false;
+		state->swirl_ticks = 0;
+		return;
+	}
+
+	limit = count * ANIM_PHASE_SCALE;
+	if (!state->swirl_ready) {
+		schedule_next_swirl(state, opts, fps);
+		state->swirl_ready = true;
+	}
+
+	if (state->swirl_ticks > 0) {
+		state->swirl_phase = wrap_phase(
+			state->swirl_phase + state->swirl_speed, limit);
+		state->swirl_ticks--;
+		if (state->swirl_ticks <= 0)
+			schedule_next_swirl(state, opts, fps);
+		return;
+	}
+
+	state->swirl_next_ticks--;
+	if (state->swirl_next_ticks <= 0)
+		start_swirl(state, opts, count, fps);
+}
+
+static void apply_swirl_overlay(struct avr_led_rgb_vals *frame, int count,
+				const struct options *opts,
+				const struct visualizer_state *state)
+{
+	int remaining = state->swirl_ticks;
+	int total = state->swirl_total_ticks;
+	int progress;
+	int attack;
+	int release;
+	int envelope = 1024;
+	int direction;
+	int spacing;
+	int tail_count = 8;
+	int i;
+
+	if (count <= 0 || remaining <= 0 || total <= 0)
+		return;
+
+	progress = total - remaining + 1;
+	attack = total / 5;
+	release = total / 3;
+	if (attack < 1)
+		attack = 1;
+	if (release < 1)
+		release = 1;
+	if (progress < attack)
+		envelope = (progress * 1024) / attack;
+	if (remaining < release) {
+		int release_env = (remaining * 1024) / release;
+
+		if (release_env < envelope)
+			envelope = release_env;
+	}
+	envelope = clamp_int(envelope, 0, 1024);
+	if (envelope <= 0)
+		return;
+
+	direction = state->swirl_speed >= 0 ? 1 : -1;
+	spacing = (count * ANIM_PHASE_SCALE) / 18;
+	if (spacing < ANIM_PHASE_SCALE)
+		spacing = ANIM_PHASE_SCALE;
+
+	for (i = 0; i < count; i++) {
+		int weight = 0;
+		int tail;
+		int c;
+
+		for (tail = 0; tail < tail_count; tail++) {
+			int fade = tail_count - tail;
+			int center = state->swirl_phase -
+				     direction * tail * spacing;
+			int w = circular_weight_q10(i, center, count,
+						    state->swirl_width +
+						    tail / 3);
+
+			weight += (w * fade * fade) /
+				  (tail_count * tail_count);
+		}
+
+		weight = clamp_int(weight, 0, 1024);
+		if (!weight)
+			continue;
+
+		for (c = 0; c < RGB_CHANNELS; c++) {
+			int add = (state->swirl_rgb[c] * weight * envelope) /
+				  (1024 * 1024);
+
+			add = (add * opts->brightness) / 255;
+			frame[i].rgb[c] = (uint8_t)clamp_int(
+				frame[i].rgb[c] + add, 0, 255);
+		}
+	}
+}
+
 static int band_mix_channel(int level, int color, int spatial,
 			    int spatial_base, int denom)
 {
@@ -1375,6 +1570,7 @@ static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
 	update_palette(state, opts->fps);
 	update_texture(state, count, opts->fps);
 	update_animation(state, count, opts->fps);
+	update_swirl(state, count, opts->fps, active, opts);
 
 	pulse_raw = (state->instant_bands[0] * 8 +
 		     state->smooth_bands[0] * 3 +
@@ -1444,6 +1640,8 @@ static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
 		frame[i].rgb[2] = scaled_channel((b * scale) / 1024,
 						 opts->brightness);
 	}
+
+	apply_swirl_overlay(frame, count, opts, state);
 
 	if (state->beat_flash > 0)
 		state->beat_flash = clamp_int(state->beat_flash -
@@ -1611,6 +1809,10 @@ static int parse_args(int argc, char **argv, struct options *opts)
 	opts->brightness = DEFAULT_BRIGHTNESS;
 	opts->idle_brightness = DEFAULT_IDLE_BRIGHTNESS;
 	opts->gain = DEFAULT_GAIN;
+	opts->swirl_enable = DEFAULT_SWIRL_ENABLE;
+	opts->swirl_min_ms = DEFAULT_SWIRL_MIN_MS;
+	opts->swirl_max_ms = DEFAULT_SWIRL_MAX_MS;
+	opts->swirl_duration_ms = DEFAULT_SWIRL_DURATION_MS;
 	opts->sync_delay_ms = 0;
 	opts->sync_delay_file = DEFAULT_SYNC_DELAY_FILE;
 
@@ -1636,6 +1838,26 @@ static int parse_args(int argc, char **argv, struct options *opts)
 				return -1;
 		} else if (strcmp(argv[i], "--gain") == 0 && i + 1 < argc) {
 			if (parse_int(argv[++i], 1, 64, &opts->gain) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--swirl") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 1,
+				      &opts->swirl_enable) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--swirl-min-ms") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 60000,
+				      &opts->swirl_min_ms) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--swirl-max-ms") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 60000,
+				      &opts->swirl_max_ms) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--swirl-duration-ms") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 100, 10000,
+				      &opts->swirl_duration_ms) < 0)
 				return -1;
 		} else if (strcmp(argv[i], "--sync-delay-ms") == 0 &&
 			   i + 1 < argc) {
@@ -1675,6 +1897,9 @@ static int parse_args(int argc, char **argv, struct options *opts)
 			return -1;
 		}
 	}
+
+	if (opts->swirl_max_ms < opts->swirl_min_ms)
+		opts->swirl_max_ms = opts->swirl_min_ms;
 
 	return 0;
 }
