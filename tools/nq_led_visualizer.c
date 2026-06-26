@@ -1031,8 +1031,8 @@ static void update_smoothed_levels(struct visualizer_state *state,
 	}
 
 	low_delta = state->instant_bands[0] - previous_low;
-	if (low_delta > 105 && state->instant_bands[0] > 240) {
-		int flash = clamp_int(low_delta * 3, 0, 1024);
+	if (low_delta > 80 && state->instant_bands[0] > 190) {
+		int flash = clamp_int(low_delta * 4, 0, 1024);
 
 		if (flash > state->beat_flash)
 			state->beat_flash = flash;
@@ -1376,23 +1376,23 @@ static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
 	update_texture(state, count, opts->fps);
 	update_animation(state, count, opts->fps);
 
-	pulse_raw = (state->instant_bands[0] * 6 +
-		     state->smooth_bands[0] * 2 +
+	pulse_raw = (state->instant_bands[0] * 8 +
+		     state->smooth_bands[0] * 3 +
 		     state->instant_overall +
-		     state->beat_flash * 4) / 13;
+		     state->beat_flash * 5) / 17;
 	body_raw = (state->instant_bands[1] * 3 +
 		    state->smooth_bands[1]) / 4;
 	sparkle_raw = (state->instant_bands[2] * 3 +
 		       state->smooth_bands[2]) / 4;
 
-	pulse = expand_level(clamp_int((pulse_raw - 120) * 1024 / 904,
+	pulse = expand_level(clamp_int((pulse_raw - 90) * 1024 / 934,
 				       0, 1024));
 	body = expand_level(clamp_int((body_raw - 240) * 1024 / 784,
 				      0, 1024));
 	sparkle = expand_level(clamp_int((sparkle_raw - 260) * 1024 / 764,
 					 0, 1024));
 
-	bass_width = count / 4;
+	bass_width = count / 3;
 	if (bass_width < 4)
 		bass_width = 4;
 	mid_width = count / 7;
@@ -1417,21 +1417,21 @@ static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
 		/* Bass stays full-ring; mids and highs add moving color bands. */
 		r = base +
 		    band_mix_channel(pulse, state->palette[0][0],
-				     bass_weight, 860, 1024) +
+				     bass_weight, 980, 1024) +
 		    band_mix_channel(body, state->palette[1][0],
 				     mid_weight, 180, 1536) +
 		    band_mix_channel(sparkle, state->palette[2][0],
 				     high_weight, 80, 1024);
 		g = base +
 		    band_mix_channel(pulse, state->palette[0][1],
-				     bass_weight, 860, 1024) +
+				     bass_weight, 980, 1024) +
 		    band_mix_channel(body, state->palette[1][1],
 				     mid_weight, 180, 1536) +
 		    band_mix_channel(sparkle, state->palette[2][1],
 				     high_weight, 80, 1024);
 		b = base +
 		    band_mix_channel(pulse, state->palette[0][2],
-				     bass_weight, 860, 1024) +
+				     bass_weight, 980, 1024) +
 		    band_mix_channel(body, state->palette[1][2],
 				     mid_weight, 180, 1536) +
 		    band_mix_channel(sparkle, state->palette[2][2],
@@ -1447,7 +1447,7 @@ static void render_pulse_frame(struct avr_led_rgb_vals *frame, int count,
 
 	if (state->beat_flash > 0)
 		state->beat_flash = clamp_int(state->beat_flash -
-					      state->beat_flash / 9 - 2,
+					      state->beat_flash / 11 - 2,
 					      0, 1024);
 }
 
@@ -1468,7 +1468,7 @@ static void smooth_rgb_frame(struct visualizer_state *state,
 		for (c = 0; c < 3; c++) {
 			int current = state->smooth_frame[i].rgb[c];
 			int target = frame[i].rgb[c];
-			int next = smooth_toward(current, target, 1, 9);
+			int next = smooth_toward(current, target, 1, 14);
 
 			state->smooth_frame[i].rgb[c] = (uint8_t)next;
 			frame[i].rgb[c] = (uint8_t)next;

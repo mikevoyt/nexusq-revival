@@ -87,18 +87,18 @@ The SomaFM appliance path defaults to `NQ_SOMAFM_AUDIO_DELAY_MS=0`. Raise the
 value only if the LEDs visibly lag the speaker output.
 
 If the LEDs visibly lead the speaker output, delay the visualizer instead. The
-default appliance visualizer uses `NQ_LED_VISUALIZER_SYNC_DELAY_MS=220`, and the
+default appliance visualizer uses `NQ_LED_VISUALIZER_SYNC_DELAY_MS=170`, and the
 running daemon can be tuned live with:
 
 ```sh
-echo 220 >/run/nexusq-led-sync-delay-ms
+echo 170 >/run/nexusq-led-sync-delay-ms
 ```
 
 Use the sync test when the direction is unclear:
 
 ```sh
 nq-visualizer-sync-test 0
-nq-visualizer-sync-test 220
+nq-visualizer-sync-test 170
 nq-visualizer-sync-test --sweep
 ```
 
@@ -122,7 +122,7 @@ NQ_LED_VISUALIZER_BRIGHTNESS=255
 NQ_LED_VISUALIZER_IDLE_BRIGHTNESS=6
 NQ_LED_VISUALIZER_GAIN=8
 NQ_LED_VISUALIZER_STYLE=pulse
-NQ_LED_VISUALIZER_SYNC_DELAY_MS=220
+NQ_LED_VISUALIZER_SYNC_DELAY_MS=170
 EOF
 ```
 
