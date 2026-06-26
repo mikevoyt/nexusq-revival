@@ -75,7 +75,14 @@ The rootfs includes:
 - `/sbin/nq-start-nfc-jukebox`
   - Starts the NFC polling loop. Set `NQ_NFC_JUKEBOX_ENABLE=0` when the Q
     should ignore cards, for example in a dedicated Squeezelite setup.
+  - Starts `NQ_SOMAFM_DEFAULT_STATION` on boot when
+    `NQ_SOMAFM_AUTOSTART=1`; the appliance default is `groovesalad`.
   - Maps tag UID to station id using `/etc/nexusq/somafm-tags.conf`.
+  - Writes a visualizer loading cue as soon as a mapped station card is tapped,
+    so the already-running LED daemon can show a bright prism handoff while the
+    stream is resolving and the audio pipeline is restarting.
+  - Triggers the in-band tap chime immediately after writing the loading cue.
+    The cue remains present until fresh PCM levels from the new player appear.
   - Resolves the SomaFM stream URL in parallel with the tap chime so stream
     startup can begin immediately after the chime path releases ALSA.
 
@@ -182,16 +189,26 @@ want to preserve current mixer volume:
 cat >/run/nexusq/somafm.env <<'EOF'
 NQ_NFC_JUKEBOX_ENABLE=1
 NQ_NFC_JUKEBOX_RESTART=1
+NQ_SOMAFM_AUTOSTART=1
+NQ_SOMAFM_DEFAULT_STATION=groovesalad
+NQ_SOMAFM_AUTOSTART_DELAY=2
+NQ_SOMAFM_AUTOSTART_RETRIES=12
+NQ_SOMAFM_AUTOSTART_RETRY_DELAY=5
 NQ_NFC_COOLDOWN_SECONDS=3
 NQ_NFC_IDLE_SLEEP=0
 NQ_NFC_SCAN_TIMEOUT=1
 NQ_NFC_ACK_ENABLE=1
 NQ_NFC_ACK_INBAND=1
 NQ_NFC_ACK_INBAND_HOLD=0.60
-NQ_NFC_AFTER_ACK_OUTPUT_RELEASE_DELAY=0.05
+NQ_NFC_AFTER_ACK_OUTPUT_RELEASE_DELAY=0.45
+NQ_NFC_LOADING_VISUALIZER_ENABLE=1
+NQ_NFC_LOADING_VISUALIZER_CUE=/run/nexusq-led-loading-cue
+NQ_NFC_LOADING_VISUALIZER_MS=12000
 NQ_SOMAFM_STOP_SQUEEZELITE=1
 NQ_SOMAFM_MASTER_VOLUME=preserve
 NQ_SOMAFM_SPEAKER_VOLUME=preserve
+NQ_SOMAFM_LOADING_VISUALIZER_CUE=/run/nexusq-led-loading-cue
+NQ_SOMAFM_LOADING_CLEAR_TIMEOUT=2
 NQ_SOMAFM_VISUALIZER_ENABLE=1
 NQ_SOMAFM_VISUALIZER_LEVELS=/run/nexusq-audio-levels
 NQ_SOMAFM_AUDIO_DELAY_MS=0
