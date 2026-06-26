@@ -10,7 +10,8 @@ a 64-bit OS, Raspberry Pi 4-class or newer hardware, and at least 2 GB RAM. The
 Nexus Q currently runs Debian armhf on a 32-bit OMAP4460, so running the full
 Music Assistant server on-device is not a supported target.
 
-The first supported endpoint mode is Squeezelite:
+Squeezelite is the supported Music Assistant endpoint mode. It is now an
+optional alternative to the standalone SomaFM NFC jukebox:
 
 - Music Assistant has a native Squeezelite/SlimProto player provider.
 - Debian trixie ships `squeezelite` for `armhf`.
@@ -62,6 +63,7 @@ To enable the LED-ring visualizer, add a separate config:
 ```sh
 cat >/run/nexusq/led-visualizer.env <<'EOF'
 NQ_LED_VISUALIZER_ENABLE=1
+NQ_LED_VISUALIZER_SOURCE=squeezelite
 NQ_LED_VISUALIZER_BRIGHTNESS=255
 NQ_LED_VISUALIZER_IDLE_BRIGHTNESS=6
 NQ_LED_VISUALIZER_GAIN=8
@@ -76,6 +78,7 @@ Persist it:
   --squeezelite /run/nexusq/squeezelite.env \
   --led-visualizer /run/nexusq/led-visualizer.env \
   --start-squeezelite \
+  --start-led-visualizer \
   --status
 ```
 
@@ -113,6 +116,13 @@ If the log says `disabled; set NQ_SQUEEZELITE_ENABLE=1`, create or restore
 When setting `NQ_SQUEEZELITE_NAME` manually, quote names with spaces, for
 example `NQ_SQUEEZELITE_NAME='Nexus Q'`.
 
+If this Q should be dedicated to Music Assistant, disable the NFC jukebox in
+`/etc/nexusq/somafm.env`:
+
+```sh
+NQ_NFC_JUKEBOX_ENABLE=0
+```
+
 ## Host-Side Test Runner
 
 The serial runner can upload a temporary player config while it provisions Wi-Fi
@@ -136,6 +146,8 @@ automatically.
 ## Current Caveats
 
 - Squeezelite startup is handled by `nq-init`, not by a normal systemd unit.
+- Squeezelite is disabled unless `/etc/nexusq/squeezelite.env` or runtime config
+  sets `NQ_SQUEEZELITE_ENABLE=1`.
 - The default sample-rate advertisement is `48000-48000` because the TAS5713
   path is currently validated only at 48 kHz.
 - `NQ_SQUEEZELITE_RESAMPLE=hLX` enables Squeezelite's SoX resampler as a

@@ -52,28 +52,39 @@ nq-led-visualizer --sweep --brightness 16
 nq-led-visualizer --off
 ```
 
-The music visualizer mode reads Squeezelite's `-v` shared-memory export from
-`/dev/shm/squeezelite-<mac>`. Upstream Squeezelite's `output_vis.c` defines
-that export as a 16-bit PCM ring buffer with `VIS_BUF_SIZE=16384`. The Q reader
-does not take the shared `pthread_rwlock_t`; it detects the layout and reads
-recent samples locklessly so it does not depend on matching libc pthread lock
-ABI details between Squeezelite and the visualizer.
+The music visualizer mode supports two audio sources:
+
+- Standalone SomaFM playback writes coarse PCM levels to
+  `/run/nexusq-audio-levels` through `nq-pcm-level-tap`. This is the default
+  appliance path.
+- Squeezelite can still expose its `-v` shared-memory buffer at
+  `/dev/shm/squeezelite-<mac>` for Music Assistant playback.
+
+Upstream Squeezelite's `output_vis.c` defines that shared-memory export as a
+16-bit PCM ring buffer with `VIS_BUF_SIZE=16384`. The Q reader does not take the
+shared `pthread_rwlock_t`; it detects the layout and reads recent samples
+locklessly so it does not depend on matching libc pthread lock ABI details
+between Squeezelite and the visualizer.
 
 The default visualizer style is `pulse`: it derives live PCM energy from the
-Squeezelite buffer, feeds that energy into a small ring fluid simulation, and
-uses an adaptive limiter so the ring can run at full brightness without staying
-pinned at maximum. A simpler `spectrum` style is also available for
-experiments.
+selected source, normalizes against recent track dynamics, pulses all LEDs from
+low-frequency energy, and layers independently rotating color bands for bass,
+midrange, and upper-frequency accents. Those bands slowly pick new clockwise or
+counterclockwise drift speeds while the palette and texture blends continue to
+evolve. A simpler `spectrum` style is also available for experiments.
 
 ## Persistent Configuration
 
-Create an LED visualizer config:
+The visualizer is enabled by default. Create an LED visualizer config only when
+you want to tune brightness, style, or source selection:
 
 ```sh
 mkdir -p /run/nexusq
 cat >/run/nexusq/led-visualizer.env <<'EOF'
 NQ_LED_VISUALIZER_ENABLE=1
-NQ_LED_VISUALIZER_FPS=20
+NQ_LED_VISUALIZER_SOURCE=auto
+NQ_LED_VISUALIZER_LEVELS=/run/nexusq-audio-levels
+NQ_LED_VISUALIZER_FPS=60
 NQ_LED_VISUALIZER_BRIGHTNESS=255
 NQ_LED_VISUALIZER_IDLE_BRIGHTNESS=6
 NQ_LED_VISUALIZER_GAIN=8
@@ -86,21 +97,25 @@ Persist it:
 ```sh
 /sbin/nq-provision \
   --led-visualizer /run/nexusq/led-visualizer.env \
-  --start-squeezelite \
+  --start-led-visualizer \
   --status
 ```
 
-When `NQ_LED_VISUALIZER_ENABLE=1`, `/sbin/nq-start-squeezelite` automatically
-adds Squeezelite's `-v` flag unless `NQ_SQUEEZELITE_VISUALIZER` overrides it.
-`/sbin/nq-init` starts `/sbin/nq-start-led-visualizer` after Squeezelite and the
-knob volume daemon.
+With `NQ_LED_VISUALIZER_SOURCE=auto`, the visualizer reads
+`/run/nexusq-audio-levels` when standalone SomaFM playback is active and falls
+back to Squeezelite shared memory when that level file is missing or stale. Set
+`NQ_LED_VISUALIZER_SOURCE=squeezelite` to force the Music Assistant path.
+
+When Squeezelite is enabled, `/sbin/nq-start-squeezelite` automatically adds
+Squeezelite's `-v` flag unless `NQ_SQUEEZELITE_VISUALIZER` overrides it.
+`/sbin/nq-init` starts `/sbin/nq-start-led-visualizer` after audio/input bringup
+and before the NFC jukebox listener.
 
 For a current-boot-only test:
 
 ```sh
 mkdir -p /run/nexusq
 cp /run/nexusq/led-visualizer.env /tmp/led-visualizer.env
-/sbin/nq-start-squeezelite
 /sbin/nq-start-led-visualizer
 ```
 
@@ -109,6 +124,7 @@ Check status and logs:
 ```sh
 /sbin/nq-player-status
 cat /run/nexusq-led-visualizer.log
+cat /run/nexusq-audio-levels
 ls -l /dev/shm
 ```
 
@@ -121,10 +137,12 @@ Validated on real Nexus Q hardware:
   hardware revision `1`, and `32` LEDs
 - low-brightness `--all` and `--sweep` commands complete through the kernel
   misc device
-- Squeezelite started with `-v` creates
-  `/dev/shm/squeezelite-f8:8f:ca:20:05:48`
-- `nq-led-visualizer` detects that shared-memory buffer and stays running while
+- SomaFM playback through `nq-play` creates `/run/nexusq-audio-levels`, and
+  `nq-led-visualizer --levels /run/nexusq-audio-levels` stays running while
   driving the ring
+- Squeezelite started with `-v` creates
+  `/dev/shm/squeezelite-f8:8f:ca:20:05:48`, and the same visualizer can fall
+  back to that shared-memory buffer
 
 ## Known Gaps
 
