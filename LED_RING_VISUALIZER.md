@@ -151,9 +151,9 @@ NQ_LED_VISUALIZER_IDLE_BRIGHTNESS=6
 NQ_LED_VISUALIZER_GAIN=8
 NQ_LED_VISUALIZER_STYLE=pulse
 NQ_LED_VISUALIZER_SWIRL=1
-NQ_LED_VISUALIZER_SWIRL_MIN_MS=10000
-NQ_LED_VISUALIZER_SWIRL_MAX_MS=15000
-NQ_LED_VISUALIZER_SWIRL_DURATION_MS=2200
+NQ_LED_VISUALIZER_SWIRL_MIN_MS=5000
+NQ_LED_VISUALIZER_SWIRL_MAX_MS=8000
+NQ_LED_VISUALIZER_SWIRL_DURATION_MS=2800
 NQ_LED_VISUALIZER_POWER_LED=1
 NQ_LED_VISUALIZER_POWER_LED_BRIGHTNESS=255
 NQ_LED_VISUALIZER_LOADING_CUE=/run/nexusq-led-loading-cue
@@ -180,7 +180,7 @@ stale. Set `NQ_LED_VISUALIZER_SOURCE=squeezelite` to force that legacy path.
 
 With the pulse style, `NQ_LED_VISUALIZER_SWIRL=1` adds an occasional rotating
 trail over the music-reactive frame. The default interval is randomized between
-10 and 15 seconds while playback is active, with each swirl lasting 2.2 seconds.
+5 and 8 seconds while playback is active, with each swirl lasting 2.8 seconds.
 
 `NQ_LED_VISUALIZER_POWER_LED=1` enables the top-LED rainbow status indicator.
 Set `NQ_LED_VISUALIZER_POWER_LED_BRIGHTNESS` from `0` to `255` to tune how
