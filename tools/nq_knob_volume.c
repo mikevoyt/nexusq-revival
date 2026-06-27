@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef KEY_VOLUMEDOWN
@@ -40,6 +41,10 @@
 #define DEFAULT_MIN 120
 #define DEFAULT_MAX 231
 #define DEFAULT_STEP 2
+#define DEFAULT_MUTE_ACTION "auto"
+#define DEFAULT_BLUETOOTH_PLAYER "/usr/sbin/nq-bluetooth-player"
+#define DEFAULT_AUDIO_OWNER_FILE "/run/nexusq-audio-owner"
+#define DEFAULT_MUTE_COOLDOWN_MS 1500
 #define SCAN_SLEEP_SECS 1
 
 static volatile sig_atomic_t keep_running = 1;
@@ -94,6 +99,16 @@ static int clamp_int(int value, int min, int max)
 	return value;
 }
 
+static long long monotonic_ms(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+		return 0;
+
+	return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
 static int run_amixer_cset(const char *card, const char *control,
 			   const char *value)
 {
@@ -130,6 +145,79 @@ static int run_amixer_cset(const char *card, const char *control,
 	}
 
 	return 0;
+}
+
+static int spawn_program1(const char *program, const char *arg)
+{
+	pid_t pid;
+	int status;
+
+	if (strchr(program, '/') && access(program, X_OK) < 0) {
+		log_msg("%s is not executable: %s", program, strerror(errno));
+		return -1;
+	}
+
+	pid = fork();
+	if (pid < 0) {
+		log_msg("fork failed: %s", strerror(errno));
+		return -1;
+	}
+
+	if (pid == 0) {
+		pid_t grandchild = fork();
+
+		if (grandchild < 0)
+			_exit(127);
+		if (grandchild == 0) {
+			setsid();
+			execlp(program, program, arg, (char *)NULL);
+			_exit(127);
+		}
+		_exit(0);
+	}
+
+	if (waitpid(pid, &status, 0) < 0) {
+		log_msg("waitpid failed: %s", strerror(errno));
+		return -1;
+	}
+
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		return -1;
+
+	return 0;
+}
+
+static int run_bluetooth_toggle(const char *helper)
+{
+	int ret = spawn_program1(helper, "toggle");
+
+	if (ret == 0)
+		log_msg("bluetooth-player=toggle launched");
+	else
+		log_msg("bluetooth-player toggle launch failed");
+	return ret;
+}
+
+static bool audio_owner_is_bluetooth(const char *path)
+{
+	char line[128];
+	FILE *file;
+	bool found = false;
+
+	file = fopen(path, "r");
+	if (!file)
+		return false;
+
+	while (fgets(line, sizeof(line), file)) {
+		if (strncmp(line, "owner=bluetooth", strlen("owner=bluetooth")) ==
+		    0) {
+			found = true;
+			break;
+		}
+	}
+
+	fclose(file);
+	return found;
 }
 
 static int read_amixer_value(const char *card, const char *control)
@@ -308,6 +396,39 @@ static void set_volume(const char *card, const char *control, int volume)
 		log_msg("%s=%d", control, volume);
 }
 
+static void toggle_mixer_mute(const char *card, const char *mute_control,
+			      bool *muted)
+{
+	*muted = !*muted;
+	run_amixer_cset(card, mute_control, *muted ? "off" : "on");
+	log_msg("%s=%s", mute_control, *muted ? "off" : "on");
+}
+
+static void handle_mute_key(const char *card, const char *mute_control,
+			    const char *mute_action,
+			    const char *bluetooth_player,
+			    const char *audio_owner_file, bool *muted)
+{
+	if (strcmp(mute_action, "none") == 0 ||
+	    strcmp(mute_action, "ignore") == 0) {
+		log_msg("mute key ignored");
+		return;
+	}
+
+	if (strcmp(mute_action, "bluetooth-toggle") == 0 ||
+	    strcmp(mute_action, "avrcp-toggle") == 0) {
+		run_bluetooth_toggle(bluetooth_player);
+		return;
+	}
+
+	if (strcmp(mute_action, "auto") == 0 &&
+	    audio_owner_is_bluetooth(audio_owner_file) &&
+	    run_bluetooth_toggle(bluetooth_player) == 0)
+		return;
+
+	toggle_mixer_mute(card, mute_control, muted);
+}
+
 int main(int argc, char **argv)
 {
 	const char *input_path = argc > 1 ? argv[1] : getenv("NQ_KNOB_INPUT");
@@ -318,11 +439,20 @@ int main(int argc, char **argv)
 					     DEFAULT_CONTROL);
 	const char *mute_control = env_or_default("NQ_KNOB_MUTE_CONTROL",
 						  "Speaker Switch");
+	const char *mute_action = env_or_default("NQ_KNOB_MUTE_ACTION",
+						 DEFAULT_MUTE_ACTION);
+	const char *bluetooth_player = env_or_default("NQ_KNOB_BLUETOOTH_PLAYER",
+						      DEFAULT_BLUETOOTH_PLAYER);
+	const char *audio_owner_file = env_or_default("NQ_KNOB_AUDIO_OWNER_FILE",
+						      DEFAULT_AUDIO_OWNER_FILE);
 	int min = parse_int_env("NQ_KNOB_MIN", DEFAULT_MIN);
 	int max = parse_int_env("NQ_KNOB_MAX", DEFAULT_MAX);
 	int step = parse_int_env("NQ_KNOB_STEP", DEFAULT_STEP);
+	int mute_cooldown_ms = parse_int_env("NQ_KNOB_MUTE_COOLDOWN_MS",
+					     DEFAULT_MUTE_COOLDOWN_MS);
 	bool mute_enabled = parse_int_env("NQ_KNOB_MUTE_ENABLE", 1) != 0;
 	bool muted = false;
+	long long last_mute_ms = 0;
 	int volume;
 	int fd;
 
@@ -346,8 +476,12 @@ int main(int argc, char **argv)
 	volume = clamp_int(volume, min, max);
 	set_volume(card, control, volume);
 
-	log_msg("card=%s control=%s range=%d..%d step=%d mute=%s",
-		card, control, min, max, step, mute_enabled ? "on" : "off");
+	if (mute_cooldown_ms < 0)
+		mute_cooldown_ms = DEFAULT_MUTE_COOLDOWN_MS;
+
+	log_msg("card=%s control=%s range=%d..%d step=%d mute=%s action=%s cooldown_ms=%d",
+		card, control, min, max, step, mute_enabled ? "on" : "off",
+		mute_action, mute_cooldown_ms);
 
 	fd = open_input_loop(input_path, input_name);
 	if (fd < 0)
@@ -387,9 +521,20 @@ int main(int argc, char **argv)
 			}
 			set_volume(card, control, volume);
 		} else if (event.code == KEY_MUTE && mute_enabled) {
-			muted = !muted;
-			run_amixer_cset(card, mute_control, muted ? "off" : "on");
-			log_msg("%s=%s", mute_control, muted ? "off" : "on");
+			long long now_ms;
+
+			if (event.value != 1)
+				continue;
+			now_ms = monotonic_ms();
+			if (now_ms > 0 && last_mute_ms > 0 &&
+			    now_ms - last_mute_ms < mute_cooldown_ms) {
+				log_msg("mute key ignored by cooldown");
+				continue;
+			}
+			last_mute_ms = now_ms;
+			handle_mute_key(card, mute_control, mute_action,
+					bluetooth_player, audio_owner_file,
+					&muted);
 		}
 	}
 

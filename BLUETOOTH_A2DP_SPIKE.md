@@ -96,6 +96,12 @@ BlueZ exposes one for the active AVRCP session, the current
 control commands call BlueZ `MediaControl1` methods on the active media-capable
 device.
 
+`nq-knob-volume` uses the same helper for the top center touch when
+`NQ_KNOB_MUTE_ACTION=auto`, which is the default. With a phone connected over
+Bluetooth, tap the top center once to toggle AVRCP play/pause. If no Bluetooth
+media-control session is active, the daemon falls back to the local TAS5713
+speaker-switch mute behavior.
+
 ## Current Codec Result
 
 The first Pixel 9 Pro baseline negotiated SBC at 44.1 kHz with bitpool 53,
