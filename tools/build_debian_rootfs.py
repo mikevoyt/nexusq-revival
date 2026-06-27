@@ -44,6 +44,10 @@ EXTRA_PACKAGES = {
     "udev",
     "dbus",
     "alsa-utils",
+    "bluez",
+    "bluez-tools",
+    "bluez-alsa-utils",
+    "rfkill",
     "alsa-ucm-conf",
     "squeezelite",
     "wpasupplicant",
@@ -482,6 +486,12 @@ else
     echo "nfc-jukebox: persistent tag map missing"
 fi
 
+if [ -s /etc/nexusq/bluetooth.env ]; then
+    echo "bluetooth: persistent config present"
+else
+    echo "bluetooth: persistent config missing"
+fi
+
 /sbin/nq-autoreboot-status 2>/dev/null || true
 
 if [ -e /sys/class/net/wlan0 ]; then
@@ -588,6 +598,26 @@ if proc_name_live nq-adbd-lite; then
 else
     echo "adb: nq-adbd-lite not running"
 fi
+
+if ls /sys/class/bluetooth/hci* >/dev/null 2>&1; then
+    for dev in /sys/class/bluetooth/hci*; do
+        [ -e "$dev" ] || continue
+        echo "bluetooth: kernel device $(basename "$dev") present"
+    done
+else
+    echo "bluetooth: kernel device missing"
+fi
+
+if proc_name_live bluetoothd; then
+    echo "bluetooth: bluetoothd running"
+else
+    echo "bluetooth: bluetoothd not running"
+fi
+
+if command -v nq-audio-owner >/dev/null 2>&1; then
+    echo "audio-owner:"
+    nq-audio-owner status 2>/dev/null | sed 's/^/  /'
+fi
 """,
         0o755,
     )
@@ -606,6 +636,7 @@ SQUEEZELITE_DEST="$CONFIG_DIR/squeezelite.env"
 LED_VISUALIZER_DEST="$CONFIG_DIR/led-visualizer.env"
 SOMAFM_DEST="$CONFIG_DIR/somafm.env"
 SOMAFM_TAGS_DEST="$CONFIG_DIR/somafm-tags.conf"
+BLUETOOTH_DEST="$CONFIG_DIR/bluetooth.env"
 RNG_DEST="$STATE_DIR/rng.seed"
 
 usage() {
@@ -621,6 +652,7 @@ Options:
   --led-visualizer PATH    Copy PATH to /etc/nexusq/led-visualizer.env
   --somafm PATH            Copy PATH to /etc/nexusq/somafm.env
   --somafm-tags PATH       Copy PATH to /etc/nexusq/somafm-tags.conf
+  --bluetooth PATH         Copy PATH to /etc/nexusq/bluetooth.env
   --rng-seed PATH          Copy PATH to /var/lib/nexusq/rng.seed
   --clear-wifi             Remove persistent Wi-Fi config
   --clear-authorized-keys  Remove persistent SSH authorized_keys
@@ -628,12 +660,14 @@ Options:
   --clear-led-visualizer   Remove persistent LED visualizer config
   --clear-somafm           Remove persistent SomaFM config
   --clear-somafm-tags      Remove persistent NFC jukebox tag map
+  --clear-bluetooth        Remove persistent Bluetooth config
   --clear-rng-seed         Remove persistent RNG seed
   --cancel-autoreboot      Cancel the current safety return-to-fastboot timer
   --start-network          Start or restart Wi-Fi, DHCP, and Dropbear
   --start-squeezelite      Start or restart the Music Assistant player endpoint
   --start-led-visualizer   Start or restart the LED-ring visualizer
   --start-nfc-jukebox      Start or restart the NFC SomaFM jukebox
+  --start-bluetooth        Start or restart Bluetooth controller bring-up
   --status                 Print appliance status after changes
   -h, --help               Show this help
 USAGE
@@ -666,6 +700,7 @@ squeezelite_src=
 led_visualizer_src=
 somafm_src=
 somafm_tags_src=
+bluetooth_src=
 rng_src=
 clear_wifi=0
 clear_auth=0
@@ -673,12 +708,14 @@ clear_squeezelite=0
 clear_led_visualizer=0
 clear_somafm=0
 clear_somafm_tags=0
+clear_bluetooth=0
 clear_rng=0
 cancel_autoreboot=0
 start_network=0
 start_squeezelite=0
 start_led_visualizer=0
 start_nfc_jukebox=0
+start_bluetooth=0
 show_status=0
 
 while [ "$#" -gt 0 ]; do
@@ -713,6 +750,11 @@ while [ "$#" -gt 0 ]; do
             somafm_tags_src="$2"
             shift 2
             ;;
+        --bluetooth)
+            [ "$#" -ge 2 ] || die "--bluetooth requires a path"
+            bluetooth_src="$2"
+            shift 2
+            ;;
         --rng-seed)
             [ "$#" -ge 2 ] || die "--rng-seed requires a path"
             rng_src="$2"
@@ -742,6 +784,10 @@ while [ "$#" -gt 0 ]; do
             clear_somafm_tags=1
             shift
             ;;
+        --clear-bluetooth)
+            clear_bluetooth=1
+            shift
+            ;;
         --clear-rng-seed)
             clear_rng=1
             shift
@@ -764,6 +810,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --start-nfc-jukebox)
             start_nfc_jukebox=1
+            shift
+            ;;
+        --start-bluetooth)
+            start_bluetooth=1
             shift
             ;;
         --status)
@@ -789,6 +839,7 @@ chmod 700 "$CONFIG_DIR" "$STATE_DIR" 2>/dev/null || true
 [ "$clear_led_visualizer" -eq 0 ] || { rm -f "$LED_VISUALIZER_DEST"; echo "removed $LED_VISUALIZER_DEST"; }
 [ "$clear_somafm" -eq 0 ] || { rm -f "$SOMAFM_DEST"; echo "removed $SOMAFM_DEST"; }
 [ "$clear_somafm_tags" -eq 0 ] || { rm -f "$SOMAFM_TAGS_DEST"; echo "removed $SOMAFM_TAGS_DEST"; }
+[ "$clear_bluetooth" -eq 0 ] || { rm -f "$BLUETOOTH_DEST"; echo "removed $BLUETOOTH_DEST"; }
 [ "$clear_rng" -eq 0 ] || { rm -f "$RNG_DEST"; echo "removed $RNG_DEST"; }
 
 [ -z "$wifi_src" ] || copy_secret "$wifi_src" "$WPA_DEST" 600
@@ -797,6 +848,7 @@ chmod 700 "$CONFIG_DIR" "$STATE_DIR" 2>/dev/null || true
 [ -z "$led_visualizer_src" ] || copy_secret "$led_visualizer_src" "$LED_VISUALIZER_DEST" 644
 [ -z "$somafm_src" ] || copy_secret "$somafm_src" "$SOMAFM_DEST" 644
 [ -z "$somafm_tags_src" ] || copy_secret "$somafm_tags_src" "$SOMAFM_TAGS_DEST" 644
+[ -z "$bluetooth_src" ] || copy_secret "$bluetooth_src" "$BLUETOOTH_DEST" 644
 [ -z "$rng_src" ] || copy_secret "$rng_src" "$RNG_DEST" 600
 
 if [ "$cancel_autoreboot" -eq 1 ]; then
@@ -819,7 +871,11 @@ if [ "$start_nfc_jukebox" -eq 1 ]; then
     /sbin/nq-start-nfc-jukebox
 fi
 
-if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ] || [ "$start_squeezelite" -eq 1 ] || [ "$start_led_visualizer" -eq 1 ] || [ "$start_nfc_jukebox" -eq 1 ]; then
+if [ "$start_bluetooth" -eq 1 ]; then
+    /sbin/nq-start-bluetooth
+fi
+
+if [ "$show_status" -eq 1 ] || [ "$start_network" -eq 1 ] || [ "$start_squeezelite" -eq 1 ] || [ "$start_led_visualizer" -eq 1 ] || [ "$start_nfc_jukebox" -eq 1 ] || [ "$start_bluetooth" -eq 1 ]; then
     /sbin/nq-appliance-status
 fi
 """,
@@ -912,6 +968,281 @@ if [ ! -s "$NVRAM_STEELHEAD" ] && [ ! -s "$NVRAM_GENERIC" ]; then
 fi
 
 exit "$rc"
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-prepare-bluetooth-firmware",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+FWDIR=/lib/firmware/brcm
+MOUNT=/run/nexusq-stock-system
+SOURCE_NAME=bcm4330.hcd
+
+log() {
+    echo "[nq-bt-fw] $*"
+}
+
+copy_hcd() {
+    src="$1"
+    [ -s "$src" ] || return 1
+    mkdir -p "$FWDIR"
+    cp "$src" "$FWDIR/$SOURCE_NAME" || return 1
+    chmod 644 "$FWDIR/$SOURCE_NAME" 2>/dev/null || true
+    for name in BCM4330B1.hcd BCM4330B1.google,steelhead.hcd; do
+        cp "$FWDIR/$SOURCE_NAME" "$FWDIR/$name" || return 1
+        chmod 644 "$FWDIR/$name" 2>/dev/null || true
+    done
+    log "installed firmware from $src"
+    return 0
+}
+
+try_tree() {
+    base="$1"
+    [ -d "$base" ] || return 1
+    for src in \\
+        "$base/vendor/firmware/$SOURCE_NAME" \\
+        "$base/etc/firmware/$SOURCE_NAME" \\
+        "$base/lib/firmware/brcm/$SOURCE_NAME" \\
+        "$base/lib/firmware/$SOURCE_NAME"
+    do
+        copy_hcd "$src" && return 0
+    done
+    return 1
+}
+
+mkdir -p "$FWDIR"
+
+if [ -s "$FWDIR/BCM4330B1.google,steelhead.hcd" ] && [ -s "$FWDIR/BCM4330B1.hcd" ]; then
+    log "firmware aliases already present"
+    exit 0
+fi
+
+if [ -s "$FWDIR/$SOURCE_NAME" ]; then
+    for name in BCM4330B1.hcd BCM4330B1.google,steelhead.hcd; do
+        cp "$FWDIR/$SOURCE_NAME" "$FWDIR/$name" || exit 1
+        chmod 644 "$FWDIR/$name" 2>/dev/null || true
+    done
+    log "installed firmware aliases from $FWDIR/$SOURCE_NAME"
+    exit 0
+fi
+
+for base in /system /mnt/system "$MOUNT"; do
+    try_tree "$base" && exit 0
+done
+
+if [ -b /dev/mmcblk0p11 ]; then
+    mkdir -p "$MOUNT"
+    if ! mountpoint -q "$MOUNT" 2>/dev/null; then
+        mount -o ro /dev/mmcblk0p11 "$MOUNT" 2>/dev/null || true
+    fi
+    try_tree "$MOUNT" && {
+        umount "$MOUNT" 2>/dev/null || true
+        exit 0
+    }
+    umount "$MOUNT" 2>/dev/null || true
+fi
+
+log "missing Broadcom Bluetooth firmware; expected stock Android vendor/firmware/$SOURCE_NAME"
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-load-bluetooth",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-bluetooth-hci.log
+mkdir -p /run /run/nexusq
+
+for env in /etc/nexusq/bluetooth.env /run/nexusq/bluetooth.env /tmp/bluetooth.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_BLUETOOTH_ENABLE:=0}"
+: "${NQ_BLUETOOTH_WAIT_SECONDS:=12}"
+: "${NQ_BLUETOOTH_MANUAL_ATTACH:=0}"
+: "${NQ_BLUETOOTH_TTY:=/dev/ttyS1}"
+: "${NQ_BLUETOOTH_ATTACH_SPEED:=115200}"
+
+log() {
+    echo "[nq-load-bluetooth] $*"
+}
+
+hci_present() {
+    ls /sys/class/bluetooth/hci* >/dev/null 2>&1
+}
+
+if [ "$NQ_BLUETOOTH_ENABLE" != "1" ]; then
+    log "disabled; set NQ_BLUETOOTH_ENABLE=1"
+    exit 0
+fi
+
+exec >>"$LOG" 2>&1
+log "starting HCI bring-up"
+date 2>/dev/null || true
+
+if hci_present; then
+    log "HCI already present"
+    exit 0
+fi
+
+/sbin/nq-prepare-bluetooth-firmware || log "firmware preparation failed; continuing for diagnostics"
+
+krel="$(uname -r)"
+mods="/lib/modules/$krel"
+if [ -d "$mods" ] && command -v depmod >/dev/null 2>&1; then
+    depmod -a "$krel" 2>/dev/null || true
+fi
+
+if command -v modprobe >/dev/null 2>&1; then
+    modprobe bluetooth 2>/dev/null || true
+    modprobe btbcm 2>/dev/null || true
+    modprobe hci_uart 2>/dev/null || true
+    modprobe rfcomm 2>/dev/null || true
+    modprobe bnep 2>/dev/null || true
+    modprobe hidp 2>/dev/null || true
+fi
+
+i=0
+while [ "$i" -lt "$NQ_BLUETOOTH_WAIT_SECONDS" ] 2>/dev/null; do
+    if hci_present; then
+        log "HCI ready"
+        rfkill unblock bluetooth 2>/dev/null || true
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+if [ "$NQ_BLUETOOTH_MANUAL_ATTACH" = "1" ] && command -v btattach >/dev/null 2>&1 && [ -c "$NQ_BLUETOOTH_TTY" ]; then
+    log "trying manual btattach tty=$NQ_BLUETOOTH_TTY speed=$NQ_BLUETOOTH_ATTACH_SPEED"
+    if [ -s /run/nq-btattach.pid ]; then
+        old_pid="$(cat /run/nq-btattach.pid 2>/dev/null || true)"
+        [ -z "$old_pid" ] || kill "$old_pid" 2>/dev/null || true
+        rm -f /run/nq-btattach.pid
+    fi
+    btattach -B "$NQ_BLUETOOTH_TTY" -P bcm -S "$NQ_BLUETOOTH_ATTACH_SPEED" &
+    echo "$!" >/run/nq-btattach.pid
+    i=0
+    while [ "$i" -lt "$NQ_BLUETOOTH_WAIT_SECONDS" ] 2>/dev/null; do
+        if hci_present; then
+            log "HCI ready after manual attach"
+            rfkill unblock bluetooth 2>/dev/null || true
+            exit 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+fi
+
+log "HCI did not appear"
+dmesg | tail -n 120 2>/dev/null || true
+exit 1
+""",
+        0o755,
+    )
+    write_text(
+        rootfs / "sbin/nq-start-bluetooth",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+LOG=/run/nexusq-bluetooth.log
+PID=/run/nq-bluetoothd.pid
+mkdir -p /run /run/nexusq
+: >"$LOG"
+exec >>"$LOG" 2>&1
+trap '' HUP
+
+for env in /etc/nexusq/bluetooth.env /run/nexusq/bluetooth.env /tmp/bluetooth.env; do
+    [ -r "$env" ] || continue
+    # shellcheck disable=SC1090
+    . "$env"
+done
+
+: "${NQ_BLUETOOTH_ENABLE:=0}"
+: "${NQ_BLUETOOTH_ALIAS:=Nexus Q}"
+: "${NQ_BLUETOOTH_PAIRABLE:=1}"
+: "${NQ_BLUETOOTH_DISCOVERABLE:=1}"
+: "${NQ_BLUETOOTH_RESTART:=0}"
+
+pid_live() {
+    pid="$1"
+    [ -n "$pid" ] || return 1
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+echo "[nq-bluetooth] starting"
+date 2>/dev/null || true
+
+if [ "$NQ_BLUETOOTH_ENABLE" != "1" ]; then
+    echo "[nq-bluetooth] disabled; set NQ_BLUETOOTH_ENABLE=1"
+    exit 0
+fi
+
+mkdir -p /run/dbus
+if [ ! -S /run/dbus/system_bus_socket ] && command -v dbus-daemon >/dev/null 2>&1; then
+    dbus-daemon --system --fork 2>/dev/null || true
+fi
+
+/sbin/nq-load-bluetooth || {
+    echo "[nq-bluetooth] HCI bring-up failed"
+    exit 1
+}
+
+if [ "$NQ_BLUETOOTH_RESTART" = "1" ] && [ -s "$PID" ]; then
+    old_pid="$(cat "$PID" 2>/dev/null || true)"
+    pid_live "$old_pid" && kill "$old_pid" 2>/dev/null || true
+    rm -f "$PID"
+fi
+
+if [ -s "$PID" ]; then
+    old_pid="$(cat "$PID" 2>/dev/null || true)"
+    if pid_live "$old_pid"; then
+        echo "[nq-bluetooth] bluetoothd already running pid=$old_pid"
+    else
+        rm -f "$PID"
+    fi
+fi
+
+if [ ! -s "$PID" ]; then
+    if ! command -v bluetoothd >/dev/null 2>&1; then
+        echo "[nq-bluetooth] bluetoothd missing"
+        exit 1
+    fi
+    bluetoothd -n &
+    echo "$!" >"$PID"
+    sleep 1
+fi
+
+rfkill unblock bluetooth 2>/dev/null || true
+if command -v btmgmt >/dev/null 2>&1; then
+    btmgmt power on 2>/dev/null || true
+    btmgmt name "$NQ_BLUETOOTH_ALIAS" 2>/dev/null || true
+    btmgmt connectable on 2>/dev/null || true
+    [ "$NQ_BLUETOOTH_PAIRABLE" = "1" ] && btmgmt pairable on 2>/dev/null || true
+    [ "$NQ_BLUETOOTH_DISCOVERABLE" = "1" ] && btmgmt discoverable on 2>/dev/null || true
+    btmgmt info 2>/dev/null || true
+fi
+
+if command -v bluetoothctl >/dev/null 2>&1; then
+    bluetoothctl show 2>/dev/null || true
+fi
+
+echo "[nq-bluetooth] ready"
 """,
         0o755,
     )
@@ -1392,10 +1723,18 @@ done
 : "${NQ_SQUEEZELITE_SPEAKER_SWITCH:=on}"
 : "${NQ_SQUEEZELITE_RESTART:=0}"
 : "${NQ_SQUEEZELITE_VISUALIZER:=${NQ_LED_VISUALIZER_ENABLE:-0}}"
+: "${NQ_SQUEEZELITE_RESPECT_AUDIO_OWNER:=1}"
 
 if [ "$NQ_SQUEEZELITE_ENABLE" != "1" ]; then
     echo "[nq-squeezelite] disabled; set NQ_SQUEEZELITE_ENABLE=1"
     exit 0
+fi
+
+if [ "$NQ_SQUEEZELITE_RESPECT_AUDIO_OWNER" = "1" ] && command -v nq-audio-owner >/dev/null 2>&1; then
+    if ! nq-audio-owner check-free squeezelite; then
+        echo "[nq-squeezelite] audio owner active; not starting"
+        exit 0
+    fi
 fi
 
 if ! command -v squeezelite >/dev/null 2>&1; then
@@ -2354,6 +2693,125 @@ esac
         0o755,
     )
     write_text(
+        rootfs / "usr/bin/nq-audio-owner",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+OWNER_FILE="${NQ_AUDIO_OWNER_FILE:-/run/nexusq-audio-owner}"
+
+usage() {
+    cat <<'EOF'
+usage:
+  nq-audio-owner status
+  nq-audio-owner claim OWNER [STATE] [PID]
+  nq-audio-owner release OWNER
+  nq-audio-owner check-free REQUESTER
+
+Bluetooth is treated as a blocking owner so local sources do not steal playback.
+EOF
+}
+
+stamp_ms() {
+    awk '{ printf "%.0f\\n", $1 * 1000; exit }' /proc/uptime 2>/dev/null || {
+        now="$(date +%s 2>/dev/null || echo 0)"
+        printf '%s000\\n' "$now"
+    }
+}
+
+read_field() {
+    key="$1"
+    [ -r "$OWNER_FILE" ] || return 1
+    awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$OWNER_FILE" 2>/dev/null
+}
+
+pid_live() {
+    pid="$1"
+    case "$pid" in ""|*[!0-9]*) return 1 ;; esac
+    [ -r "/proc/$pid/status" ] || return 1
+    state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
+    [ "$state" = "Z" ] && return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+drop_if_stale() {
+    [ -r "$OWNER_FILE" ] || return 0
+    pid="$(read_field pid || true)"
+    [ -n "$pid" ] || return 0
+    [ -d /proc ] || return 0
+    pid_live "$pid" && return 0
+    rm -f "$OWNER_FILE" 2>/dev/null || true
+}
+
+write_claim() {
+    owner="$1"
+    state="$2"
+    pid="$3"
+    mkdir -p "$(dirname "$OWNER_FILE")" 2>/dev/null || true
+    tmp="${OWNER_FILE}.tmp.$$"
+    {
+        echo "owner=$owner"
+        echo "state=$state"
+        echo "pid=$pid"
+        echo "updated_ms=$(stamp_ms)"
+    } >"$tmp" || exit 1
+    mv "$tmp" "$OWNER_FILE"
+}
+
+case "${1:-}" in
+    status)
+        drop_if_stale
+        if [ -r "$OWNER_FILE" ]; then
+            cat "$OWNER_FILE"
+        else
+            echo "owner="
+            echo "state=idle"
+        fi
+        ;;
+    claim)
+        [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+        owner="$2"
+        state="${3:-active}"
+        pid="${4:-}"
+        case "$owner" in ""|*[!A-Za-z0-9_.-]*)
+            echo "nq-audio-owner: invalid owner: $owner" >&2
+            exit 2
+            ;;
+        esac
+        write_claim "$owner" "$state" "$pid"
+        ;;
+    release)
+        [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+        drop_if_stale
+        owner="$(read_field owner || true)"
+        if [ "$owner" = "$2" ]; then
+            rm -f "$OWNER_FILE"
+        fi
+        ;;
+    check-free)
+        [ "$#" -eq 2 ] || { usage >&2; exit 2; }
+        drop_if_stale
+        owner="$(read_field owner || true)"
+        state="$(read_field state || true)"
+        if [ "$owner" = "bluetooth" ] && [ "$2" != "bluetooth" ]; then
+            echo "audio owner busy: owner=$owner state=${state:-active}" >&2
+            exit 1
+        fi
+        exit 0
+        ;;
+    -h|--help)
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+""",
+        0o755,
+    )
+    write_text(
         rootfs / "usr/bin/nq-somafm-play",
         """#!/bin/sh
 
@@ -2413,6 +2871,8 @@ done
 : "${NQ_SOMAFM_SELECT_SUFFIX:=}"
 : "${NQ_SOMAFM_SELECT_TIMEOUT:=2}"
 : "${NQ_SOMAFM_LOADING_VISUALIZER_CUE:=/run/nexusq-led-loading-cue}"
+: "${NQ_SOMAFM_RESPECT_AUDIO_OWNER:=1}"
+: "${NQ_SOMAFM_AUDIO_OWNER:=somafm}"
 
 if [ -n "${NQ_SOMAFM_OUTPUT_RELEASE_DELAY_OVERRIDE:-}" ]; then
     NQ_SOMAFM_OUTPUT_RELEASE_DELAY="$NQ_SOMAFM_OUTPUT_RELEASE_DELAY_OVERRIDE"
@@ -2471,6 +2931,25 @@ stamp_ms() {
 timing() {
     [ "$NQ_SOMAFM_TIMING" = "1" ] || return 0
     echo "[nq-somafm] t=$(stamp) $*" >>"$LOG" 2>/dev/null || true
+}
+
+audio_owner_available() {
+    [ "$NQ_SOMAFM_RESPECT_AUDIO_OWNER" = "1" ] || return 0
+    command -v nq-audio-owner >/dev/null 2>&1 || return 0
+    nq-audio-owner check-free "$NQ_SOMAFM_AUDIO_OWNER"
+}
+
+claim_audio_owner() {
+    owner_pid="$1"
+    [ "$NQ_SOMAFM_RESPECT_AUDIO_OWNER" = "1" ] || return 0
+    command -v nq-audio-owner >/dev/null 2>&1 || return 0
+    nq-audio-owner claim "$NQ_SOMAFM_AUDIO_OWNER" playing "$owner_pid" 2>/dev/null || true
+}
+
+release_audio_owner() {
+    [ "$NQ_SOMAFM_RESPECT_AUDIO_OWNER" = "1" ] || return 0
+    command -v nq-audio-owner >/dev/null 2>&1 || return 0
+    nq-audio-owner release "$NQ_SOMAFM_AUDIO_OWNER" 2>/dev/null || true
 }
 
 clear_loading_visualizer() {
@@ -2633,6 +3112,7 @@ stop_players() {
         timing "audio release wait delay=$NQ_SOMAFM_OUTPUT_RELEASE_DELAY"
         short_sleep "$NQ_SOMAFM_OUTPUT_RELEASE_DELAY"
     fi
+    release_audio_owner
 }
 
 station_id_for_select() {
@@ -2690,6 +3170,7 @@ start_jukebox_stream_player() {
     ) </dev/null >>"$LOG" 2>&1 &
     echo "$!" >"$PID"
     echo "jukebox-stream" >"$MODE"
+    claim_audio_owner "$(cat "$PID" 2>/dev/null || true)"
     timing "jukebox player spawned pid=$(cat "$PID" 2>/dev/null || true)"
     short_sleep "$NQ_SOMAFM_START_CHECK_DELAY"
     pid_live "$(cat "$PID" 2>/dev/null || true)"
@@ -2762,6 +3243,7 @@ case "${1:-}" in
     --stop)
         stop_players
         clear_loading_visualizer
+        release_audio_owner
         exit 0
         ;;
     -h|--help)
@@ -2774,6 +3256,11 @@ case "${1:-}" in
         exit 2
         ;;
 esac
+
+audio_owner_available || {
+    echo "nq-somafm-play: audio owner is busy; not stealing playback" >&2
+    exit 75
+}
 
 station="$1"
 if [ "$NQ_SOMAFM_JUKEBOX_STREAM" = "1" ]; then
@@ -2852,6 +3339,7 @@ play_start_ms="$(stamp_ms)"
 ) </dev/null >>"$LOG" 2>&1 &
 echo "$!" >"$PID"
 echo "direct" >"$MODE"
+claim_audio_owner "$(cat "$PID" 2>/dev/null || true)"
 echo "nq-somafm: starting $station pid=$(cat "$PID" 2>/dev/null || true)" >&2
 timing "player spawned station=$station pid=$(cat "$PID" 2>/dev/null || true)"
 short_sleep "$NQ_SOMAFM_START_CHECK_DELAY"
@@ -3540,6 +4028,7 @@ done
 : "${NQ_NFC_LOADING_VISUALIZER_ENABLE:=1}"
 : "${NQ_NFC_LOADING_VISUALIZER_CUE:=${NQ_SOMAFM_LOADING_VISUALIZER_CUE:-/run/nexusq-led-loading-cue}}"
 : "${NQ_NFC_LOADING_VISUALIZER_MS:=12000}"
+: "${NQ_NFC_RESPECT_AUDIO_OWNER:=1}"
 
 log() {
     if [ "$NQ_NFC_TIMING" = "1" ]; then
@@ -3618,6 +4107,12 @@ trigger_loading_visualizer() {
     mv "$tmp" "$NQ_NFC_LOADING_VISUALIZER_CUE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
+audio_owner_available() {
+    [ "$NQ_NFC_RESPECT_AUDIO_OWNER" = "1" ] || return 0
+    command -v nq-audio-owner >/dev/null 2>&1 || return 0
+    nq-audio-owner check-free somafm >/dev/null 2>&1
+}
+
 use_scan_loop() {
     case "$NQ_NFC_SCAN_LOOP" in
         1|yes|true|on)
@@ -3668,6 +4163,13 @@ handle_uid() {
     if [ -z "$station" ]; then
         log "unknown tag uid=$uid"
         printf '%s\\n' "$uid" >>"$NQ_NFC_UNKNOWN_LOG" 2>/dev/null || true
+        last_uid="$uid"
+        last_time="$now"
+        return 0
+    fi
+
+    if ! audio_owner_available; then
+        log "tag ignored; audio owner active uid=$uid station=$station"
         last_uid="$uid"
         last_time="$now"
         return 0
@@ -3795,6 +4297,7 @@ done
 : "${NQ_SOMAFM_AUTOSTART_RETRY_DELAY:=5}"
 : "${NQ_SOMAFM_LOADING_VISUALIZER_CUE:=/run/nexusq-led-loading-cue}"
 : "${NQ_NFC_LOADING_VISUALIZER_MS:=12000}"
+: "${NQ_NFC_RESPECT_AUDIO_OWNER:=1}"
 
 pid_live() {
     pid="$1"
@@ -3830,6 +4333,12 @@ somafm_live() {
     pid_live "$pid"
 }
 
+audio_owner_available() {
+    [ "$NQ_NFC_RESPECT_AUDIO_OWNER" = "1" ] || return 0
+    command -v nq-audio-owner >/dev/null 2>&1 || return 0
+    nq-audio-owner check-free somafm >/dev/null 2>&1
+}
+
 trigger_autostart_visualizer() {
     [ -n "$NQ_SOMAFM_LOADING_VISUALIZER_CUE" ] || return 0
     dir="$(dirname "$NQ_SOMAFM_LOADING_VISUALIZER_CUE")"
@@ -3856,6 +4365,10 @@ start_default_station() {
         echo "[nq-nfc-jukebox] default station skipped; SomaFM already running"
         return 0
     }
+    audio_owner_available || {
+        echo "[nq-nfc-jukebox] default station skipped; audio owner active"
+        return 0
+    }
     (
         trap '' HUP
         retries="$NQ_SOMAFM_AUTOSTART_RETRIES"
@@ -3864,6 +4377,10 @@ start_default_station() {
         sleep "$NQ_SOMAFM_AUTOSTART_DELAY" 2>/dev/null || true
         while [ "$attempt" -le "$retries" ] 2>/dev/null; do
             somafm_live && exit 0
+            audio_owner_available || {
+                echo "[nq-nfc-jukebox] autostart skipped; audio owner active"
+                exit 0
+            }
             echo "[nq-nfc-jukebox] autostart station=$NQ_SOMAFM_DEFAULT_STATION attempt=$attempt"
             trigger_autostart_visualizer
             if /usr/bin/nq-somafm-play "$NQ_SOMAFM_DEFAULT_STATION"; then
@@ -3982,6 +4499,11 @@ if [ -s /etc/nexusq/somafm-tags.conf ]; then
 else
     echo "config: /etc/nexusq/somafm-tags.conf missing"
 fi
+if [ -s /etc/nexusq/bluetooth.env ]; then
+    echo "config: /etc/nexusq/bluetooth.env present"
+else
+    echo "config: /etc/nexusq/bluetooth.env missing"
+fi
 
 proc_name_live() {
     name="$1"
@@ -4054,6 +4576,30 @@ if [ -s /run/nexusq-audio-levels ]; then
     sed -n '1,9p' /run/nexusq-audio-levels 2>/dev/null || true
 else
     echo "audio-levels: /run/nexusq-audio-levels missing"
+fi
+
+if command -v nq-audio-owner >/dev/null 2>&1; then
+    echo "audio-owner:"
+    nq-audio-owner status 2>/dev/null | sed 's/^/  /'
+fi
+
+if ls /sys/class/bluetooth/hci* >/dev/null 2>&1; then
+    for dev in /sys/class/bluetooth/hci*; do
+        [ -e "$dev" ] || continue
+        echo "bluetooth: kernel device $(basename "$dev") present"
+    done
+else
+    echo "bluetooth: kernel device missing"
+fi
+
+if proc_name_live bluetoothd; then
+    echo "bluetooth: bluetoothd running"
+else
+    echo "bluetooth: bluetoothd not running"
+fi
+
+if command -v btmgmt >/dev/null 2>&1; then
+    btmgmt info 2>/dev/null || true
 fi
 
 if ps | grep '[n]q-led-visualiz' >/dev/null 2>&1; then
@@ -4257,6 +4803,10 @@ if [ -x /sbin/nq-load-audio ]; then
     /sbin/nq-load-audio || true
 fi
 
+if [ -x /sbin/nq-start-bluetooth ]; then
+    /sbin/nq-start-bluetooth || true
+fi
+
 if [ -x /sbin/nq-start-squeezelite ]; then
     /sbin/nq-start-squeezelite || true
 fi
@@ -4307,6 +4857,7 @@ Expected files:
 - /etc/nexusq/somafm.env
 - /etc/nexusq/somafm-tags.conf
 - /etc/nexusq/adbd.env
+- /etc/nexusq/bluetooth.env
 
 Runtime-only test files in /run/nexusq override these persistent files.
 """,

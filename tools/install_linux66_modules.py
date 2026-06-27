@@ -15,6 +15,12 @@ MODULE_PATTERNS = (
     "net/nfc/**/*.ko",
     "drivers/nfc/pn544/*.ko",
     "drivers/net/wireless/broadcom/brcm80211/**/*.ko",
+    "net/bluetooth/bluetooth.ko",
+    "net/bluetooth/rfcomm/rfcomm.ko",
+    "net/bluetooth/bnep/bnep.ko",
+    "net/bluetooth/hidp/hidp.ko",
+    "drivers/bluetooth/btbcm.ko",
+    "drivers/bluetooth/hci_uart.ko",
 )
 
 

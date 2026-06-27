@@ -25,6 +25,7 @@ Persistent files:
 - `/etc/nexusq/somafm.env`
 - `/etc/nexusq/somafm-tags.conf`
 - `/etc/nexusq/adbd.env`
+- `/etc/nexusq/bluetooth.env`
 - `/var/lib/nexusq/rng.seed`
 
 Do not commit real Wi-Fi config, private keys, or generated seeds. They belong
@@ -173,6 +174,27 @@ Assistant playback so Squeezelite can release the ALSA device.
 
 See [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md) for the porting rationale and
 Music Assistant setup notes.
+
+## Bluetooth Controller Spike
+
+Bluetooth bring-up is opt-in while the A2DP sink is still being built. A test
+image can persist the controller enable flag with:
+
+```sh
+cat >/run/nexusq/bluetooth.env <<'EOF'
+NQ_BLUETOOTH_ENABLE=1
+NQ_BLUETOOTH_ALIAS='Nexus Q'
+EOF
+
+/sbin/nq-provision --bluetooth /run/nexusq/bluetooth.env --start-bluetooth --status
+```
+
+When a later Bluetooth audio sink claims `nq-audio-owner bluetooth`, SomaFM NFC
+taps and the default boot station yield instead of stealing playback. The LED
+visualizer should follow whichever source owns `/run/nexusq-audio-levels`.
+
+See [BLUETOOTH_HCI_SPIKE.md](BLUETOOTH_HCI_SPIKE.md) for wiring, firmware, and
+diagnostic details.
 
 ## SomaFM NFC Jukebox
 

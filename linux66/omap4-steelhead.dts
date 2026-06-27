@@ -118,6 +118,32 @@
 		>;
 	};
 
+	bt_uart2_pins: bt-uart2-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x118, PIN_INPUT_PULLUP | MUX_MODE0)	/* uart2_cts */
+			OMAP4_IOPAD(0x11a, PIN_OUTPUT | MUX_MODE0)		/* uart2_rts */
+			OMAP4_IOPAD(0x11c, PIN_INPUT_PULLUP | MUX_MODE0)	/* uart2_rx */
+			OMAP4_IOPAD(0x11e, PIN_OUTPUT | MUX_MODE0)		/* uart2_tx */
+		>;
+	};
+
+	bt_gpio_pins: bt-gpio-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x06a, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a21.gpio_45 - BT_WAKE */
+			OMAP4_IOPAD(0x06c, PIN_OUTPUT | MUX_MODE3)		/* gpmc_a22.gpio_46 - BT_REG_ON */
+			OMAP4_IOPAD(0x06e, PIN_INPUT | MUX_MODE3)		/* gpmc_a23.gpio_47 - HOST_WAKE */
+			OMAP4_IOPAD(0x078, PIN_OUTPUT | MUX_MODE3)		/* gpmc_ncs2.gpio_52 - BT_RST_N */
+		>;
+	};
+
+	bt_mcbsp1_idle_pins: bt-mcbsp1-idle-pins {
+		pinctrl-single,pins = <
+			OMAP4_IOPAD(0x0fe, PIN_OUTPUT | MUX_MODE3)		/* abe_mcbsp1_clkx.gpio_114 */
+			OMAP4_IOPAD(0x102, PIN_OUTPUT | MUX_MODE3)		/* abe_mcbsp1_dx.gpio_116 */
+			OMAP4_IOPAD(0x104, PIN_OUTPUT | MUX_MODE3)		/* abe_mcbsp1_fsx.gpio_117 */
+		>;
+	};
+
 	avr_gpio_pins: avr-gpio-pins {
 		pinctrl-single,pins = <
 			OMAP4_IOPAD(0x070, PIN_OUTPUT_PULLUP | MUX_MODE3)	/* gpmc_a24.gpio_48 */
@@ -324,6 +350,27 @@
 	interrupts-extended = <&wakeupgen GIC_SPI 74 IRQ_TYPE_LEVEL_HIGH
 			       &omap4_pmx_core OMAP4_UART3_RX>;
 	status = "okay";
+};
+
+&uart2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&bt_uart2_pins &bt_gpio_pins &bt_mcbsp1_idle_pins>;
+	uart-has-rtscts;
+	interrupts-extended = <&wakeupgen GIC_SPI 73 IRQ_TYPE_LEVEL_HIGH
+			       &omap4_pmx_core OMAP4_UART2_RX>;
+	status = "okay";
+
+	bluetooth {
+		compatible = "brcm,bcm4330-bt";
+		current-speed = <115200>;
+		max-speed = <921600>;
+		shutdown-gpios = <&gpio2 14 GPIO_ACTIVE_HIGH>;		/* gpio_46 */
+		device-wakeup-gpios = <&gpio2 13 GPIO_ACTIVE_HIGH>;	/* gpio_45 */
+		reset-gpios = <&gpio2 20 GPIO_ACTIVE_LOW>;		/* gpio_52 */
+		interrupt-parent = <&gpio2>;
+		interrupts = <15 IRQ_TYPE_EDGE_RISING>;			/* gpio_47 */
+		interrupt-names = "host-wakeup";
+	};
 };
 
 &usb_otg_hs {
