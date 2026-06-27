@@ -33,11 +33,16 @@
 #define DEFAULT_GAIN 8
 #define DEFAULT_STYLE VIS_STYLE_PULSE
 #define DEFAULT_SWIRL_ENABLE 1
-#define DEFAULT_SWIRL_MIN_MS 10000
-#define DEFAULT_SWIRL_MAX_MS 15000
-#define DEFAULT_SWIRL_DURATION_MS 2200
+#define DEFAULT_SWIRL_MIN_MS 5000
+#define DEFAULT_SWIRL_MAX_MS 8000
+#define DEFAULT_SWIRL_DURATION_MS 2800
 #define DEFAULT_POWER_LED_ENABLE 1
 #define DEFAULT_POWER_LED_BRIGHTNESS 255
+#define DEFAULT_LOADING_CUE_FILE "/run/nexusq-led-loading-cue"
+#define DEFAULT_LOADING_MS 12000
+#define DEFAULT_LOADING_MIN_MS 3000
+#define DEFAULT_LOADING_BRIGHTNESS 255
+#define DEFAULT_TAP_FEEDBACK_MS 1500
 #define DEFAULT_SYNC_STATE_FILE "/run/nexusq-led-visualizer-state"
 #define DEFAULT_SYNC_DELAY_FILE "/run/nexusq-led-sync-delay-ms"
 #define LEVEL_DELAY_QUEUE 128
@@ -53,6 +58,7 @@
 #define TRACK_HISTORY 48
 #define ANIM_PHASE_SCALE 1024
 #define POWER_LED_HUE_MS 45
+#define LOADING_PHASE_MS 1800
 
 #define AVR_LED_MODE_HOST_AUTO_COMMIT 0x01
 
@@ -89,6 +95,7 @@ enum command {
 	CMD_ALL,
 	CMD_POWER_LED,
 	CMD_SWEEP,
+	CMD_TAP_FEEDBACK,
 };
 
 enum visualizer_style {
@@ -112,6 +119,11 @@ struct options {
 	int swirl_duration_ms;
 	int power_led_enable;
 	int power_led_brightness;
+	const char *loading_cue;
+	int loading_ms;
+	int loading_min_ms;
+	int loading_brightness;
+	int tap_feedback_ms;
 	int sync_delay_ms;
 	const char *sync_delay_file;
 	uint8_t all_rgb[3];
@@ -145,6 +157,11 @@ struct vis_levels {
 struct delayed_level_sample {
 	struct vis_levels levels;
 	long long due_ms;
+};
+
+struct loading_cue {
+	long long updated_ms;
+	int duration_ms;
 };
 
 struct level_delay_state {
@@ -185,6 +202,10 @@ struct visualizer_state {
 	int swirl_speed;
 	int swirl_width;
 	int swirl_rgb[RGB_CHANNELS];
+	long long loading_cue_ms;
+	long long last_loading_cue_ms;
+	int loading_ms;
+	int loading_phase;
 	uint32_t rng;
 	uint32_t last_level_seq;
 	uint32_t last_sync_state_seq;
@@ -193,6 +214,7 @@ struct visualizer_state {
 	bool texture_ready;
 	bool animation_ready;
 	bool swirl_ready;
+	bool loading_active;
 	bool power_led_ready;
 	bool power_led_failed;
 	bool frame_smooth_valid;
@@ -217,13 +239,16 @@ static void usage(const char *argv0)
 		"     [--swirl 0|1] [--swirl-min-ms N] [--swirl-max-ms N]\n"
 		"     [--swirl-duration-ms N]\n"
 		"     [--power-led 0|1] [--power-led-brightness 0..255]\n"
+		"     [--loading-cue PATH] [--loading-ms N]\n"
+		"     [--loading-min-ms N] [--loading-brightness 0..255]\n"
 		"     [--sync-delay-ms N] [--sync-delay-file PATH]\n"
 		"  %s --info [--device /dev/leds]\n"
 		"  %s --off [--device /dev/leds]\n"
 		"  %s --all R G B [--device /dev/leds]\n"
 		"  %s --power-led-color R G B [--device /dev/leds]\n"
+		"  %s --tap-feedback [MS] [--device /dev/leds] [--brightness 0..255]\n"
 		"  %s --sweep [--device /dev/leds] [--brightness 0..255]\n",
-		argv0, argv0, argv0, argv0, argv0, argv0);
+		argv0, argv0, argv0, argv0, argv0, argv0, argv0);
 }
 
 static int parse_int(const char *s, int min, int max, int *out)
@@ -733,6 +758,54 @@ static int read_int_file(const char *path, int fallback, int min, int max)
 	if (errno || end == data)
 		return fallback;
 	return clamp_int((int)value, min, max);
+}
+
+static int read_loading_cue_file(const char *path, int default_duration_ms,
+				 struct loading_cue *cue)
+{
+	char data[512];
+	char *line;
+	char *saveptr = NULL;
+	long long updated_ms = -1;
+	long duration_ms = default_duration_ms;
+	ssize_t got;
+	int fd;
+
+	if (!path || !path[0])
+		return -1;
+
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	got = read(fd, data, sizeof(data) - 1);
+	close(fd);
+	if (got <= 0)
+		return -1;
+	data[got] = '\0';
+
+	for (line = strtok_r(data, "\n", &saveptr); line;
+	     line = strtok_r(NULL, "\n", &saveptr)) {
+		long value;
+		long long ll_value;
+
+		if (parse_key_value_ll(line, "updated_ms", &ll_value) == 0) {
+			updated_ms = ll_value;
+		} else if (parse_key_value_long(line, "duration_ms",
+						&value) == 0) {
+			duration_ms = value;
+		}
+	}
+
+	if (updated_ms <= 0)
+		return -1;
+	if (duration_ms < 0)
+		duration_ms = 0;
+	if (duration_ms > 60000)
+		duration_ms = 60000;
+
+	cue->updated_ms = updated_ms;
+	cue->duration_ms = (int)duration_ms;
+	return 0;
 }
 
 static int read_level_file(const char *path, int gain,
@@ -1297,6 +1370,82 @@ static int circular_weight_q10(int pos, int center_q10, int count,
 	       (width_q10 + ANIM_PHASE_SCALE);
 }
 
+static void render_tap_feedback_frame(struct avr_led_rgb_vals *frame,
+				      int count, int brightness,
+				      long long elapsed_ms)
+{
+	int limit = count * ANIM_PHASE_SCALE;
+	int center;
+	int echo;
+	int i;
+
+	memset(frame, 0, sizeof(*frame) * count);
+	if (count <= 0 || limit <= 0)
+		return;
+
+	center = (int)(((elapsed_ms % 900) * limit) / 900);
+	echo = center - limit / 5;
+
+	for (i = 0; i < count; i++) {
+		int head = circular_weight_q10(i, center, count, 3);
+		int tail = circular_weight_q10(i, echo, count, 5);
+		int pulse = (int)((elapsed_ms % 520) * 1024 / 520);
+		int breathe = pulse < 512 ? pulse : 1024 - pulse;
+		int r;
+		int g;
+		int b;
+
+		r = 24 + (230 * head) / 1024 + (210 * tail) / 1024 +
+		    (55 * breathe) / 512;
+		g = 84 + (255 * head) / 1024 + (55 * tail) / 1024 +
+		    (130 * breathe) / 512;
+		b = 110 + (255 * head) / 1024 + (255 * tail) / 1024 +
+		    (145 * breathe) / 512;
+
+		frame[i].rgb[0] = scaled_channel(r, brightness);
+		frame[i].rgb[1] = scaled_channel(g, brightness);
+		frame[i].rgb[2] = scaled_channel(b, brightness);
+	}
+}
+
+static int run_tap_feedback(int fd, int brightness, int duration_ms)
+{
+	struct avr_led_rgb_vals frame[MAX_LEDS];
+	int count = led_get_count(fd);
+	long long start_ms;
+	int interval_us;
+
+	if (count < 0)
+		return 1;
+	if (led_set_mode(fd, AVR_LED_MODE_HOST_AUTO_COMMIT) < 0)
+		return 1;
+
+	duration_ms = clamp_int(duration_ms, 0, 10000);
+	brightness = clamp_int(brightness, 0, 255);
+	interval_us = 1000000 / DEFAULT_FPS;
+	start_ms = monotonic_ms();
+
+	while (keep_running) {
+		long long elapsed_ms = monotonic_ms() - start_ms;
+
+		if (elapsed_ms >= duration_ms)
+			break;
+		render_tap_feedback_frame(frame, count, brightness,
+					  elapsed_ms);
+		if (led_set_range(fd, 0, (uint8_t)count, frame) < 0)
+			return 1;
+		if (((elapsed_ms / 120) & 1) == 0)
+			led_set_mute(fd, brightness, brightness, brightness);
+		else
+			led_set_mute(fd, 0, brightness, brightness);
+		usleep((useconds_t)interval_us);
+	}
+
+	/* Leave a visible handoff color; the restarted daemon takes over next. */
+	led_set_mute(fd, 0, brightness, brightness);
+	return 0;
+}
+
 static int rotating_band_weight(const struct visualizer_state *state, int band,
 				int pos, int count, int lobes,
 				int width_leds)
@@ -1735,8 +1884,131 @@ static void render_spectrum_frame(struct avr_led_rgb_vals *frame, int count,
 	}
 }
 
+static void render_loading_frame(struct avr_led_rgb_vals *frame, int count,
+				 const struct options *opts,
+				 const struct visualizer_state *state)
+{
+	long long elapsed_ms = monotonic_ms() - state->loading_cue_ms;
+	int limit = count * ANIM_PHASE_SCALE;
+	int wave_base;
+	int i;
+
+	if (elapsed_ms < 0)
+		elapsed_ms = 0;
+	memset(frame, 0, sizeof(*frame) * count);
+	if (count <= 0 || limit <= 0)
+		return;
+
+	wave_base = (int)(((elapsed_ms % 1500) * limit) / 1500);
+	for (i = 0; i < count; i++) {
+		int head = 0;
+		int counter = 0;
+		int ripple = 0;
+		int r;
+		int g;
+		int b;
+		int tail;
+		int wave;
+
+		for (tail = 0; tail < 9; tail++) {
+			int fade = 9 - tail;
+			int spacing = limit / 22;
+			int center = state->loading_phase - tail * spacing;
+			int opposite = state->loading_phase + limit / 2 +
+				       tail * spacing;
+
+			head += (circular_weight_q10(i, center, count,
+						     2 + tail / 3) *
+				 fade * fade) / 81;
+			counter += (circular_weight_q10(i, opposite, count,
+							2 + tail / 4) *
+				    fade * fade) / 108;
+		}
+
+		for (wave = 0; wave < 3; wave++) {
+			int center = wave_base + (wave * limit) / 3;
+			int weight = circular_weight_q10(i, center, count, 1);
+
+			ripple += weight / 2;
+		}
+
+		head = clamp_int(head, 0, 1024);
+		counter = clamp_int(counter, 0, 1024);
+		ripple = clamp_int(ripple, 0, 1024);
+
+		r = 8 + (205 * head) / 1024 + (255 * counter) / 1024 +
+		    (86 * ripple) / 1024;
+		g = 24 + (255 * head) / 1024 + (92 * counter) / 1024 +
+		    (255 * ripple) / 1024;
+		b = 56 + (255 * head) / 1024 + (178 * counter) / 1024 +
+		    (118 * ripple) / 1024;
+
+		frame[i].rgb[0] = scaled_channel(r, opts->loading_brightness);
+		frame[i].rgb[1] = scaled_channel(g, opts->loading_brightness);
+		frame[i].rgb[2] = scaled_channel(b, opts->loading_brightness);
+	}
+}
+
+static bool update_loading_state(struct visualizer_state *state,
+				 const struct options *opts, int count)
+{
+	struct loading_cue cue;
+	long long now_ms = monotonic_ms();
+	long long elapsed_ms;
+	bool cue_present = false;
+	int duration_ms = opts->loading_ms;
+
+	if (opts->loading_cue && opts->loading_cue[0] &&
+	    read_loading_cue_file(opts->loading_cue, opts->loading_ms,
+				  &cue) == 0) {
+		duration_ms = cue.duration_ms > 0 ? cue.duration_ms :
+			      opts->loading_ms;
+		if (cue.updated_ms > now_ms + 5000)
+			cue.updated_ms = now_ms;
+		if (now_ms - cue.updated_ms <= duration_ms) {
+			cue_present = true;
+			if (cue.updated_ms != state->last_loading_cue_ms) {
+				int limit = count * ANIM_PHASE_SCALE;
+
+				state->last_loading_cue_ms = cue.updated_ms;
+				state->loading_cue_ms = cue.updated_ms;
+				state->loading_ms = duration_ms;
+				state->loading_active = true;
+				state->frame_smooth_valid = false;
+				if (limit > 0)
+					state->loading_phase =
+						rand_range(state, 0, limit - 1);
+			}
+		}
+	}
+
+	if (!state->loading_active)
+		return false;
+
+	elapsed_ms = now_ms - state->loading_cue_ms;
+	if (elapsed_ms >= state->loading_ms || !cue_present) {
+		state->loading_active = false;
+		state->frame_smooth_valid = false;
+		return false;
+	}
+
+	if (count > 0) {
+		int fps = clamp_int(opts->fps, 1, 60);
+		int limit = count * ANIM_PHASE_SCALE;
+		int step = (limit * 1000) / (LOADING_PHASE_MS * fps);
+
+		if (step < 1)
+			step = 1;
+		state->loading_phase = wrap_phase(state->loading_phase + step,
+						  limit);
+	}
+
+	return true;
+}
+
 static void update_power_led(int fd, const struct options *opts,
-			     struct visualizer_state *state, bool active)
+			     struct visualizer_state *state, bool active,
+			     bool loading)
 {
 	struct avr_led_rgb_vals rgb = { .rgb = { 0, 0, 0 } };
 	long long now_ms;
@@ -1744,8 +2016,26 @@ static void update_power_led(int fd, const struct options *opts,
 	if (!opts->power_led_enable || state->power_led_failed)
 		return;
 
-	if (active) {
-		now_ms = monotonic_ms();
+	now_ms = monotonic_ms();
+	if (loading) {
+		long long elapsed_ms = now_ms - state->loading_cue_ms;
+		int phase;
+		int brightness;
+
+		if (elapsed_ms < 0)
+			elapsed_ms = 0;
+		if (elapsed_ms < 700) {
+			rgb.rgb[0] = 255;
+			rgb.rgb[1] = 255;
+			rgb.rgb[2] = 255;
+		} else {
+			phase = (int)((elapsed_ms - 700) % 700);
+			brightness = phase < 350 ? 255 : 150;
+			rgb.rgb[0] = (uint8_t)((40 * brightness) / 255);
+			rgb.rgb[1] = (uint8_t)brightness;
+			rgb.rgb[2] = (uint8_t)brightness;
+		}
+	} else if (active) {
 		rgb = scale_color((uint8_t)((now_ms / POWER_LED_HUE_MS) &
 					    0xff),
 				  opts->power_led_brightness);
@@ -1788,6 +2078,7 @@ static int run_visualizer(int fd, const struct options *opts)
 		int ret = -1;
 		int sync_delay_ms = effective_sync_delay_ms(opts);
 		bool active = false;
+		bool loading;
 
 		memset(&levels, 0, sizeof(levels));
 		if (read_level_file(opts->levels, opts->gain, &levels) == 0) {
@@ -1823,21 +2114,26 @@ static int run_visualizer(int fd, const struct options *opts)
 		if (missing_ticks > opts->fps * 30)
 			active = false;
 
-		switch (opts->style) {
-		case VIS_STYLE_PULSE:
-			render_pulse_frame(frame, count, phase, active, opts,
-					   &state);
-			break;
-		case VIS_STYLE_SPECTRUM:
-			render_spectrum_frame(frame, count, phase, active, opts,
-					      &state);
-			break;
+		loading = update_loading_state(&state, opts, count);
+		if (loading) {
+			render_loading_frame(frame, count, opts, &state);
+		} else {
+			switch (opts->style) {
+			case VIS_STYLE_PULSE:
+				render_pulse_frame(frame, count, phase, active,
+						   opts, &state);
+				break;
+			case VIS_STYLE_SPECTRUM:
+				render_spectrum_frame(frame, count, phase,
+						      active, opts, &state);
+				break;
+			}
 		}
 
 		smooth_rgb_frame(&state, frame, count);
 		if (led_set_range(fd, 0, (uint8_t)count, frame) < 0)
 			break;
-		update_power_led(fd, opts, &state, active);
+		update_power_led(fd, opts, &state, active || loading, loading);
 		if (levels.running && levels.updated &&
 		    levels.updated != state.last_sync_state_seq) {
 			write_sync_state(&levels, monotonic_ms(), active,
@@ -1873,6 +2169,11 @@ static int parse_args(int argc, char **argv, struct options *opts)
 	opts->swirl_duration_ms = DEFAULT_SWIRL_DURATION_MS;
 	opts->power_led_enable = DEFAULT_POWER_LED_ENABLE;
 	opts->power_led_brightness = DEFAULT_POWER_LED_BRIGHTNESS;
+	opts->loading_cue = DEFAULT_LOADING_CUE_FILE;
+	opts->loading_ms = DEFAULT_LOADING_MS;
+	opts->loading_min_ms = DEFAULT_LOADING_MIN_MS;
+	opts->loading_brightness = DEFAULT_LOADING_BRIGHTNESS;
+	opts->tap_feedback_ms = DEFAULT_TAP_FEEDBACK_MS;
 	opts->sync_delay_ms = 0;
 	opts->sync_delay_file = DEFAULT_SYNC_DELAY_FILE;
 
@@ -1929,6 +2230,29 @@ static int parse_args(int argc, char **argv, struct options *opts)
 			if (parse_int(argv[++i], 0, 255,
 				      &opts->power_led_brightness) < 0)
 				return -1;
+		} else if (strcmp(argv[i], "--loading-cue") == 0 &&
+			   i + 1 < argc) {
+			opts->loading_cue = argv[++i];
+		} else if (strcmp(argv[i], "--loading-ms") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 60000,
+				      &opts->loading_ms) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--loading-min-ms") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 60000,
+				      &opts->loading_min_ms) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--loading-brightness") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 255,
+				      &opts->loading_brightness) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--tap-feedback-ms") == 0 &&
+			   i + 1 < argc) {
+			if (parse_int(argv[++i], 0, 10000,
+				      &opts->tap_feedback_ms) < 0)
+				return -1;
 		} else if (strcmp(argv[i], "--sync-delay-ms") == 0 &&
 			   i + 1 < argc) {
 			if (parse_int(argv[++i], 0, 2000,
@@ -1954,6 +2278,12 @@ static int parse_args(int argc, char **argv, struct options *opts)
 			opts->command = CMD_OFF;
 		} else if (strcmp(argv[i], "--sweep") == 0) {
 			opts->command = CMD_SWEEP;
+		} else if (strcmp(argv[i], "--tap-feedback") == 0) {
+			opts->command = CMD_TAP_FEEDBACK;
+			if (i + 1 < argc && argv[i + 1][0] != '-' &&
+			    parse_int(argv[i + 1], 0, 10000,
+				      &opts->tap_feedback_ms) == 0)
+				i++;
 		} else if (strcmp(argv[i], "--all") == 0 && i + 3 < argc) {
 			opts->command = CMD_ALL;
 			if (parse_u8_arg(argv[++i], &opts->all_rgb[0]) < 0 ||
@@ -1980,6 +2310,8 @@ static int parse_args(int argc, char **argv, struct options *opts)
 
 	if (opts->swirl_max_ms < opts->swirl_min_ms)
 		opts->swirl_max_ms = opts->swirl_min_ms;
+	if (opts->loading_min_ms > opts->loading_ms)
+		opts->loading_min_ms = opts->loading_ms;
 
 	return 0;
 }
@@ -2029,6 +2361,10 @@ int main(int argc, char **argv)
 		break;
 	case CMD_SWEEP:
 		ret = run_sweep(fd, opts.brightness);
+		break;
+	case CMD_TAP_FEEDBACK:
+		ret = run_tap_feedback(fd, opts.brightness,
+				       opts.tap_feedback_ms);
 		break;
 	case CMD_VISUALIZER:
 		ret = run_visualizer(fd, &opts);

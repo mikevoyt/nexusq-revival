@@ -1647,11 +1647,15 @@ done
 : "${NQ_LED_VISUALIZER_GAIN:=8}"
 : "${NQ_LED_VISUALIZER_STYLE:=pulse}"
 : "${NQ_LED_VISUALIZER_SWIRL:=1}"
-: "${NQ_LED_VISUALIZER_SWIRL_MIN_MS:=10000}"
-: "${NQ_LED_VISUALIZER_SWIRL_MAX_MS:=15000}"
-: "${NQ_LED_VISUALIZER_SWIRL_DURATION_MS:=2200}"
+: "${NQ_LED_VISUALIZER_SWIRL_MIN_MS:=5000}"
+: "${NQ_LED_VISUALIZER_SWIRL_MAX_MS:=8000}"
+: "${NQ_LED_VISUALIZER_SWIRL_DURATION_MS:=2800}"
 : "${NQ_LED_VISUALIZER_POWER_LED:=1}"
 : "${NQ_LED_VISUALIZER_POWER_LED_BRIGHTNESS:=255}"
+: "${NQ_LED_VISUALIZER_LOADING_CUE:=/run/nexusq-led-loading-cue}"
+: "${NQ_LED_VISUALIZER_LOADING_MS:=12000}"
+: "${NQ_LED_VISUALIZER_LOADING_MIN_MS:=3000}"
+: "${NQ_LED_VISUALIZER_LOADING_BRIGHTNESS:=255}"
 : "${NQ_LED_VISUALIZER_SYNC_DELAY_MS:=220}"
 : "${NQ_LED_VISUALIZER_SYNC_DELAY_FILE:=/run/nexusq-led-sync-delay-ms}"
 
@@ -1708,6 +1712,10 @@ set -- /usr/sbin/nq-led-visualizer \\
     --swirl-duration-ms "$NQ_LED_VISUALIZER_SWIRL_DURATION_MS" \\
     --power-led "$NQ_LED_VISUALIZER_POWER_LED" \\
     --power-led-brightness "$NQ_LED_VISUALIZER_POWER_LED_BRIGHTNESS" \\
+    --loading-cue "$NQ_LED_VISUALIZER_LOADING_CUE" \\
+    --loading-ms "$NQ_LED_VISUALIZER_LOADING_MS" \\
+    --loading-min-ms "$NQ_LED_VISUALIZER_LOADING_MIN_MS" \\
+    --loading-brightness "$NQ_LED_VISUALIZER_LOADING_BRIGHTNESS" \\
     --sync-delay-ms "$NQ_LED_VISUALIZER_SYNC_DELAY_MS" \\
     --sync-delay-file "$NQ_LED_VISUALIZER_SYNC_DELAY_FILE"
 
@@ -2388,6 +2396,7 @@ done
 : "${NQ_SOMAFM_VISUALIZER_ENABLE:=1}"
 : "${NQ_SOMAFM_VISUALIZER_LEVELS:=/run/nexusq-audio-levels}"
 : "${NQ_SOMAFM_VISUALIZER_UPDATE_MS:=16}"
+: "${NQ_SOMAFM_LOADING_CLEAR_TIMEOUT:=2}"
 : "${NQ_SOMAFM_AUDIO_DELAY_MS:=0}"
 : "${NQ_SOMAFM_APLAY_BUFFER_TIME_US:=80000}"
 : "${NQ_SOMAFM_APLAY_PERIOD_TIME_US:=20000}"
@@ -2403,6 +2412,7 @@ done
 : "${NQ_SOMAFM_SELECT_PREFIX:=}"
 : "${NQ_SOMAFM_SELECT_SUFFIX:=}"
 : "${NQ_SOMAFM_SELECT_TIMEOUT:=2}"
+: "${NQ_SOMAFM_LOADING_VISUALIZER_CUE:=/run/nexusq-led-loading-cue}"
 
 if [ -n "${NQ_SOMAFM_OUTPUT_RELEASE_DELAY_OVERRIDE:-}" ]; then
     NQ_SOMAFM_OUTPUT_RELEASE_DELAY="$NQ_SOMAFM_OUTPUT_RELEASE_DELAY_OVERRIDE"
@@ -2451,9 +2461,55 @@ stamp() {
     awk '{ print $1; exit }' /proc/uptime 2>/dev/null || date +%s 2>/dev/null || echo 0
 }
 
+stamp_ms() {
+    awk '{ printf "%.0f\\n", $1 * 1000; exit }' /proc/uptime 2>/dev/null || {
+        now="$(date +%s 2>/dev/null || echo 0)"
+        printf '%s000\\n' "$now"
+    }
+}
+
 timing() {
     [ "$NQ_SOMAFM_TIMING" = "1" ] || return 0
     echo "[nq-somafm] t=$(stamp) $*" >>"$LOG" 2>/dev/null || true
+}
+
+clear_loading_visualizer() {
+    [ -n "$NQ_SOMAFM_LOADING_VISUALIZER_CUE" ] || return 0
+    rm -f "$NQ_SOMAFM_LOADING_VISUALIZER_CUE" 2>/dev/null || true
+}
+
+audio_levels_running_after() {
+    since_ms="$1"
+    [ "$NQ_SOMAFM_VISUALIZER_ENABLE" = "1" ] || return 1
+    [ -r "$NQ_SOMAFM_VISUALIZER_LEVELS" ] || return 1
+    awk -v since="$since_ms" '
+        BEGIN { updated = -1; running = 0 }
+        /^updated_ms=/ { updated = $0; sub(/^updated_ms=/, "", updated) }
+        /^running=/ { running = $0; sub(/^running=/, "", running) }
+        END { exit !(running == 1 && updated >= since) }
+    ' "$NQ_SOMAFM_VISUALIZER_LEVELS" 2>/dev/null
+}
+
+wait_audio_levels_after() {
+    since_ms="$1"
+    timeout_ms="$(awk -v s="$NQ_SOMAFM_LOADING_CLEAR_TIMEOUT" 'BEGIN { if (s < 0) s = 0; printf "%.0f\\n", s * 1000 }' 2>/dev/null || echo 2000)"
+    case "$timeout_ms" in ""|*[!0-9]*) timeout_ms=2000 ;; esac
+    deadline_ms=$(( $(stamp_ms) + timeout_ms ))
+    while [ "$(stamp_ms)" -lt "$deadline_ms" ] 2>/dev/null; do
+        audio_levels_running_after "$since_ms" && return 0
+        sleep 0.02 2>/dev/null || true
+    done
+    audio_levels_running_after "$since_ms"
+}
+
+complete_loading_visualizer() {
+    since_ms="$1"
+    if wait_audio_levels_after "$since_ms"; then
+        timing "loading cue cleared after fresh audio levels"
+    else
+        timing "loading cue cleared after player live fallback"
+    fi
+    clear_loading_visualizer
 }
 
 short_sleep() {
@@ -2660,8 +2716,10 @@ play_jukebox_stream() {
     timing "select request begin station=$station_id"
     curl -fsS --connect-timeout 1 --max-time "$NQ_SOMAFM_SELECT_TIMEOUT" "$select_url" >>"$LOG" 2>&1 || return 1
     timing "select request done station=$station_id"
+    play_start_ms="$(stamp_ms)"
     start_jukebox_stream_player || return 1
     timing "jukebox selected station=$station_id pid=$(cat "$PID" 2>/dev/null || true)"
+    complete_loading_visualizer "$play_start_ms"
     echo "nq-somafm: jukebox selected $station_id pid=$(cat "$PID" 2>/dev/null || true)"
 }
 
@@ -2703,6 +2761,7 @@ case "${1:-}" in
         ;;
     --stop)
         stop_players
+        clear_loading_visualizer
         exit 0
         ;;
     -h|--help)
@@ -2752,6 +2811,7 @@ fi
     date 2>/dev/null || true
 } >>"$LOG"
 
+play_start_ms="$(stamp_ms)"
 (
     trap '' HUP
     export NQ_PLAY_MIXER_CARD="$NQ_SOMAFM_MIXER_CARD"
@@ -2798,6 +2858,7 @@ short_sleep "$NQ_SOMAFM_START_CHECK_DELAY"
 
 if pid_live "$(cat "$PID" 2>/dev/null || true)"; then
     timing "player live station=$station pid=$(cat "$PID" 2>/dev/null || true)"
+    complete_loading_visualizer "$play_start_ms"
     echo "nq-somafm: playing $station pid=$(cat "$PID")"
     exit 0
 fi
@@ -3474,8 +3535,11 @@ done
 : "${NQ_NFC_ACK_ENABLE:=1}"
 : "${NQ_NFC_ACK_INBAND:=1}"
 : "${NQ_NFC_ACK_TRIGGER:=${NQ_SOMAFM_CHIME_TRIGGER:-/run/nexusq-audio-chime}}"
-: "${NQ_NFC_AFTER_ACK_OUTPUT_RELEASE_DELAY:=0.05}"
+: "${NQ_NFC_AFTER_ACK_OUTPUT_RELEASE_DELAY:=0.45}"
 : "${NQ_NFC_TIMING:=1}"
+: "${NQ_NFC_LOADING_VISUALIZER_ENABLE:=1}"
+: "${NQ_NFC_LOADING_VISUALIZER_CUE:=${NQ_SOMAFM_LOADING_VISUALIZER_CUE:-/run/nexusq-led-loading-cue}}"
+: "${NQ_NFC_LOADING_VISUALIZER_MS:=12000}"
 
 log() {
     if [ "$NQ_NFC_TIMING" = "1" ]; then
@@ -3491,6 +3555,13 @@ pid_now() {
 
 stamp() {
     awk '{ print $1; exit }' /proc/uptime 2>/dev/null || date +%s 2>/dev/null || echo 0
+}
+
+stamp_ms() {
+    awk '{ printf "%.0f\\n", $1 * 1000; exit }' /proc/uptime 2>/dev/null || {
+        now="$(date +%s 2>/dev/null || echo 0)"
+        printf '%s000\\n' "$now"
+    }
 }
 
 station_for_uid() {
@@ -3523,6 +3594,28 @@ trigger_inband_ack() {
         return 1
     }
     return 0
+}
+
+trigger_loading_visualizer() {
+    uid="$1"
+    station="$2"
+    [ "$NQ_NFC_LOADING_VISUALIZER_ENABLE" = "1" ] || return 0
+    [ -n "$NQ_NFC_LOADING_VISUALIZER_CUE" ] || return 0
+    dir="$(dirname "$NQ_NFC_LOADING_VISUALIZER_CUE")"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    tmp="${NQ_NFC_LOADING_VISUALIZER_CUE}.tmp.$$"
+    {
+        echo "version=1"
+        echo "source=nfc"
+        echo "updated_ms=$(stamp_ms)"
+        echo "duration_ms=$NQ_NFC_LOADING_VISUALIZER_MS"
+        echo "uid=$uid"
+        echo "station=$station"
+    } >"$tmp" 2>/dev/null || {
+        rm -f "$tmp" 2>/dev/null || true
+        return 0
+    }
+    mv "$tmp" "$NQ_NFC_LOADING_VISUALIZER_CUE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
 use_scan_loop() {
@@ -3581,6 +3674,8 @@ handle_uid() {
     fi
 
     log "tag uid=$uid station=$station"
+    trigger_loading_visualizer "$uid" "$station"
+    log "loading cue uid=$uid station=$station"
     ack_pretriggered=0
     if trigger_inband_ack; then
         ack_pretriggered=1
@@ -3693,6 +3788,13 @@ done
 
 : "${NQ_NFC_JUKEBOX_ENABLE:=1}"
 : "${NQ_NFC_JUKEBOX_RESTART:=0}"
+: "${NQ_SOMAFM_AUTOSTART:=1}"
+: "${NQ_SOMAFM_DEFAULT_STATION:=groovesalad}"
+: "${NQ_SOMAFM_AUTOSTART_DELAY:=2}"
+: "${NQ_SOMAFM_AUTOSTART_RETRIES:=12}"
+: "${NQ_SOMAFM_AUTOSTART_RETRY_DELAY:=5}"
+: "${NQ_SOMAFM_LOADING_VISUALIZER_CUE:=/run/nexusq-led-loading-cue}"
+: "${NQ_NFC_LOADING_VISUALIZER_MS:=12000}"
 
 pid_live() {
     pid="$1"
@@ -3714,6 +3816,64 @@ stop_old() {
         pid_live "$old_pid" && kill -KILL "$old_pid" 2>/dev/null || true
     fi
     rm -f "$PID"
+}
+
+stamp_ms() {
+    awk '{ printf "%.0f\\n", $1 * 1000; exit }' /proc/uptime 2>/dev/null || {
+        now="$(date +%s 2>/dev/null || echo 0)"
+        printf '%s000\\n' "$now"
+    }
+}
+
+somafm_live() {
+    pid="$(cat /run/nq-somafm.pid 2>/dev/null || true)"
+    pid_live "$pid"
+}
+
+trigger_autostart_visualizer() {
+    [ -n "$NQ_SOMAFM_LOADING_VISUALIZER_CUE" ] || return 0
+    dir="$(dirname "$NQ_SOMAFM_LOADING_VISUALIZER_CUE")"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    tmp="${NQ_SOMAFM_LOADING_VISUALIZER_CUE}.tmp.$$"
+    {
+        echo "version=1"
+        echo "source=boot"
+        echo "updated_ms=$(stamp_ms)"
+        echo "duration_ms=$NQ_NFC_LOADING_VISUALIZER_MS"
+        echo "station=$NQ_SOMAFM_DEFAULT_STATION"
+    } >"$tmp" 2>/dev/null || {
+        rm -f "$tmp" 2>/dev/null || true
+        return 0
+    }
+    mv "$tmp" "$NQ_SOMAFM_LOADING_VISUALIZER_CUE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+start_default_station() {
+    [ "$NQ_SOMAFM_AUTOSTART" = "1" ] || return 0
+    [ -n "$NQ_SOMAFM_DEFAULT_STATION" ] || return 0
+    command -v nq-somafm-play >/dev/null 2>&1 || return 0
+    somafm_live && {
+        echo "[nq-nfc-jukebox] default station skipped; SomaFM already running"
+        return 0
+    }
+    (
+        trap '' HUP
+        retries="$NQ_SOMAFM_AUTOSTART_RETRIES"
+        case "$retries" in ""|*[!0-9]*) retries=12 ;; esac
+        attempt=1
+        sleep "$NQ_SOMAFM_AUTOSTART_DELAY" 2>/dev/null || true
+        while [ "$attempt" -le "$retries" ] 2>/dev/null; do
+            somafm_live && exit 0
+            echo "[nq-nfc-jukebox] autostart station=$NQ_SOMAFM_DEFAULT_STATION attempt=$attempt"
+            trigger_autostart_visualizer
+            if /usr/bin/nq-somafm-play "$NQ_SOMAFM_DEFAULT_STATION"; then
+                exit 0
+            fi
+            echo "[nq-nfc-jukebox] autostart failed station=$NQ_SOMAFM_DEFAULT_STATION attempt=$attempt"
+            attempt=$((attempt + 1))
+            sleep "$NQ_SOMAFM_AUTOSTART_RETRY_DELAY" 2>/dev/null || true
+        done
+    ) &
 }
 
 if [ "$NQ_NFC_JUKEBOX_ENABLE" != "1" ]; then
@@ -3757,6 +3917,7 @@ sleep 1
 
 if pid_live "$(cat "$PID" 2>/dev/null || true)"; then
     echo "[nq-nfc-jukebox] pid=$(cat "$PID")"
+    start_default_station
     exit 0
 fi
 
