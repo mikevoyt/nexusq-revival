@@ -84,6 +84,10 @@ This branch fixes that by reading the negotiated `Format:` from
 converting higher-width input to clean `S16_LE` before metering, chime/delay
 processing, and ALSA playback.
 
+The live Pixel 9 Pro retest passed after deploying the conversion path:
+`aptX-HD`, `S24_LE`, stereo 48 kHz, Bluetooth volume `127/127`, nonzero
+visualizer levels, and clean audible playback on the Nexus Q.
+
 For byte-alignment experiments, set `NQ_BLUETOOTH_A2DP_INPUT_FORMAT=S32_LE` in
 the runtime env to force the tap to treat 24-in-32 PCM as high-aligned.
 
