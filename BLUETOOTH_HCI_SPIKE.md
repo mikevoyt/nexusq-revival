@@ -52,6 +52,25 @@ tail -n 120 /run/nexusq-bluetooth-hci.log /run/nexusq-bluetooth.log
 dmesg | grep -i -E 'bluetooth|bcm|uart2|hci'
 ```
 
+## Hardware Result
+
+Tested on a Nexus Q on 2026-06-27 with the Linux 6.6 Bluetooth spike kernel
+booted by `fastboot boot`.
+
+Result: **pass for HCI bring-up**.
+
+- `hci_uart`, `btbcm`, `bluetooth`, `rfcomm`, `bnep`, and `hidp` loaded.
+- `/sys/class/bluetooth/hci0` appeared on the OMAP UART2 serdev path.
+- The runtime firmware helper copied stock firmware from the Android system
+  partition into `/lib/firmware/brcm`.
+- The kernel loaded `brcm/BCM4330B1.google,steelhead.hcd`.
+- `dmesg` identified the controller as `BCM4330B1` and then as
+  `Google Phantasm BCM4330B1 37.4MHz Class1.5`.
+
+Observed caveat: Linux reports the Broadcom default Bluetooth address
+`43:30:b1:00:00:00`. The next spike should set a per-device address from the
+Nexus Q boot argument `board_steelhead_bluetooth.btaddr`.
+
 If the serdev path does not create `hci0`, the script has an explicit fallback
 for manual attach:
 
