@@ -1361,6 +1361,7 @@ export PATH
 LOG=/run/nexusq-bluetooth-audio.log
 BLUEALSA_PID=/run/nq-bluealsa.pid
 APLAY_PID=/run/nq-bluealsa-aplay.pid
+TAP_PID=/run/nq-bluetooth-tap.pid
 MONITOR_PID=/run/nq-bluetooth-audio-monitor.pid
 mkdir -p /run /run/nexusq
 : >"$LOG"
@@ -1377,12 +1378,18 @@ done
 : "${NQ_BLUETOOTH_A2DP_ENABLE:=0}"
 : "${NQ_BLUETOOTH_A2DP_RESTART:=0}"
 : "${NQ_BLUETOOTH_A2DP_PROFILE:=a2dp-sink}"
-: "${NQ_BLUETOOTH_A2DP_PCM:=plughw:0,0}"
+: "${NQ_BLUETOOTH_A2DP_PCM:=nexusq48}"
 : "${NQ_BLUETOOTH_A2DP_ADDR:=00:00:00:00:00:00}"
 : "${NQ_BLUETOOTH_A2DP_VOLUME:=software}"
 : "${NQ_BLUETOOTH_A2DP_SINGLE_AUDIO:=1}"
 : "${NQ_BLUETOOTH_A2DP_PERIOD_TIME:=100000}"
 : "${NQ_BLUETOOTH_A2DP_BUFFER_TIME:=500000}"
+: "${NQ_BLUETOOTH_A2DP_TAP_ENABLE:=1}"
+: "${NQ_BLUETOOTH_A2DP_LEVELS:=/run/nexusq-audio-levels}"
+: "${NQ_BLUETOOTH_A2DP_LEVEL_UPDATE_MS:=16}"
+: "${NQ_BLUETOOTH_A2DP_TAP_AUDIO_DELAY_MS:=0}"
+: "${NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME:=20000}"
+: "${NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME:=80000}"
 : "${NQ_BLUETOOTH_A2DP_MONITOR:=1}"
 : "${NQ_BLUETOOTH_A2DP_MONITOR_INTERVAL:=2}"
 : "${NQ_BLUETOOTH_A2DP_STOP_LOCAL_ON_CLAIM:=1}"
@@ -1429,6 +1436,22 @@ stop_proc_name() {
     [ -z "$live_pids" ] || kill $live_pids 2>/dev/null || true
 }
 
+stop_stale_audio_scripts() {
+    for cmdline in /proc/[0-9]*/cmdline; do
+        [ -r "$cmdline" ] || continue
+        pid="${cmdline#/proc/}"
+        pid="${pid%/cmdline}"
+        [ "$pid" = "$$" ] && continue
+        cmd="$(tr '\\0' ' ' <"$cmdline" 2>/dev/null || true)"
+        case "$cmd" in
+            "/bin/sh /sbin/nq-start-bluetooth-audio"*|\
+            "sh /sbin/nq-start-bluetooth-audio"*)
+                kill -9 "$pid" 2>/dev/null || true
+                ;;
+        esac
+    done
+}
+
 stop_local_sources() {
     [ "$NQ_BLUETOOTH_A2DP_STOP_LOCAL_ON_CLAIM" = "1" ] || return 0
     echo "[nq-bluetooth-audio] stopping local sources for bluetooth priority"
@@ -1439,6 +1462,97 @@ stop_local_sources() {
     stop_proc_name nq-pcm-level-tap
     stop_proc_name aplay
     stop_proc_name squeezelite
+}
+
+tap_available() {
+    [ "$NQ_BLUETOOTH_A2DP_TAP_ENABLE" = "1" ] || return 1
+    command -v bluealsa-cli >/dev/null 2>&1 || return 1
+    command -v nq-pcm-level-tap >/dev/null 2>&1 || return 1
+    command -v aplay >/dev/null 2>&1 || return 1
+    return 0
+}
+
+find_a2dp_source_pcm() {
+    bluealsa-cli list-pcms 2>/dev/null |
+        awk '/a2dpsnk\\/source/ { print; exit }'
+}
+
+pcm_sampling() {
+    bluealsa-cli info "$1" 2>/dev/null |
+        awk '/^Sampling:/ { print $2; exit }'
+}
+
+pcm_channels() {
+    bluealsa-cli info "$1" 2>/dev/null |
+        awk '/^Channels:/ { print $2; exit }'
+}
+
+sanitize_number() {
+    value="$1"
+    fallback="$2"
+    case "$value" in
+        ""|*[!0-9]*) printf '%s\\n' "$fallback" ;;
+        *) printf '%s\\n' "$value" ;;
+    esac
+}
+
+start_tap_player() {
+    if [ -s "$TAP_PID" ] && pid_live "$(cat "$TAP_PID" 2>/dev/null || true)"; then
+        echo "[nq-bluetooth-audio] tap player already running pid=$(cat "$TAP_PID")"
+        return 0
+    fi
+
+    echo "[nq-bluetooth-audio] exec: bluealsa-cli open | nq-pcm-level-tap | aplay -D $NQ_BLUETOOTH_A2DP_PCM"
+    (
+        active=0
+        trap 'nq-audio-owner release bluetooth 2>/dev/null || true; exit 0' INT TERM EXIT
+        while true; do
+            pcm="$(find_a2dp_source_pcm | head -n 1)"
+            if [ -z "$pcm" ]; then
+                if [ "$active" = "1" ]; then
+                    echo "[nq-bluetooth-audio] A2DP PCM gone; releasing audio"
+                    nq-audio-owner release bluetooth 2>/dev/null || true
+                    active=0
+                fi
+                sleep "$NQ_BLUETOOTH_A2DP_MONITOR_INTERVAL"
+                continue
+            fi
+
+            rate="$(sanitize_number "$(pcm_sampling "$pcm")" 44100)"
+            channels="$(sanitize_number "$(pcm_channels "$pcm")" 2)"
+            echo "[nq-bluetooth-audio] A2DP PCM present; claiming audio pcm=$pcm rate=$rate channels=$channels"
+            stop_local_sources
+            nq-audio-owner claim bluetooth streaming 2>/dev/null || true
+            active=1
+
+            bluealsa-cli open "$pcm" |
+            nq-pcm-level-tap \\
+                --levels "$NQ_BLUETOOTH_A2DP_LEVELS" \\
+                --update-ms "$NQ_BLUETOOTH_A2DP_LEVEL_UPDATE_MS" \\
+                --rate "$rate" \\
+                --channels "$channels" \\
+                --audio-delay-ms "$NQ_BLUETOOTH_A2DP_TAP_AUDIO_DELAY_MS" |
+            aplay \\
+                -q \\
+                -D "$NQ_BLUETOOTH_A2DP_PCM" \\
+                -f S16_LE \\
+                -r "$rate" \\
+                -c "$channels" \\
+                --buffer-time="$NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME" \\
+                --period-time="$NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME"
+            rc="$?"
+            echo "[nq-bluetooth-audio] tap pipeline exited rc=$rc"
+            sleep 1
+        done
+    ) &
+    echo "$!" >"$TAP_PID"
+    sleep 1
+    pid_live "$(cat "$TAP_PID")" || {
+        echo "[nq-bluetooth-audio] tap player failed to stay running"
+        rm -f "$TAP_PID"
+        return 1
+    }
+    echo "[nq-bluetooth-audio] tap player pid=$(cat "$TAP_PID")"
 }
 
 if [ "$NQ_BLUETOOTH_ENABLE" != "1" ] || [ "$NQ_BLUETOOTH_A2DP_ENABLE" != "1" ]; then
@@ -1459,7 +1573,7 @@ if ! command -v bluealsa >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v bluealsa-aplay >/dev/null 2>&1; then
+if ! command -v bluealsa-aplay >/dev/null 2>&1 && ! tap_available; then
     echo "[nq-bluetooth-audio] bluealsa-aplay command missing"
     exit 1
 fi
@@ -1480,8 +1594,13 @@ fi
 if [ "$NQ_BLUETOOTH_A2DP_RESTART" = "1" ]; then
     stop_pid_file "$MONITOR_PID"
     stop_pid_file "$APLAY_PID"
+    stop_pid_file "$TAP_PID"
+    stop_stale_audio_scripts
     stop_pid_file "$BLUEALSA_PID"
     stop_proc_name bluealsa-aplay
+    stop_proc_name bluealsa-cli
+    stop_proc_name nq-pcm-level-tap
+    stop_proc_name aplay
     stop_proc_name bluealsa
 fi
 
@@ -1504,9 +1623,16 @@ else
     }
 fi
 
-if [ -s "$APLAY_PID" ] && pid_live "$(cat "$APLAY_PID" 2>/dev/null || true)"; then
+if tap_available; then
+    start_tap_player || {
+        echo "[nq-bluetooth-audio] tap player unavailable; falling back to bluealsa-aplay"
+        NQ_BLUETOOTH_A2DP_TAP_ENABLE=0
+    }
+fi
+
+if [ "$NQ_BLUETOOTH_A2DP_TAP_ENABLE" != "1" ] && [ -s "$APLAY_PID" ] && pid_live "$(cat "$APLAY_PID" 2>/dev/null || true)"; then
     echo "[nq-bluetooth-audio] bluealsa-aplay already running pid=$(cat "$APLAY_PID")"
-else
+elif [ "$NQ_BLUETOOTH_A2DP_TAP_ENABLE" != "1" ]; then
     set -- bluealsa-aplay --profile-a2dp --pcm="$NQ_BLUETOOTH_A2DP_PCM"
     [ "$NQ_BLUETOOTH_A2DP_SINGLE_AUDIO" != "1" ] || set -- "$@" --single-audio
     [ -z "$NQ_BLUETOOTH_A2DP_VOLUME" ] || set -- "$@" --volume="$NQ_BLUETOOTH_A2DP_VOLUME"
@@ -1550,7 +1676,7 @@ monitor_loop() {
     done
 }
 
-if [ "$NQ_BLUETOOTH_A2DP_MONITOR" = "1" ]; then
+if [ "$NQ_BLUETOOTH_A2DP_MONITOR" = "1" ] && [ "$NQ_BLUETOOTH_A2DP_TAP_ENABLE" != "1" ]; then
     if [ -s "$MONITOR_PID" ] && pid_live "$(cat "$MONITOR_PID" 2>/dev/null || true)"; then
         echo "[nq-bluetooth-audio] monitor already running pid=$(cat "$MONITOR_PID")"
     else
@@ -4788,6 +4914,18 @@ else
     echo "bluetooth-audio: bluealsa-aplay missing"
 fi
 
+if command -v bluealsa-cli >/dev/null 2>&1; then
+    echo "bluetooth-audio: bluealsa-cli installed"
+else
+    echo "bluetooth-audio: bluealsa-cli missing"
+fi
+
+if command -v nq-pcm-level-tap >/dev/null 2>&1; then
+    echo "bluetooth-audio: pcm level tap installed"
+else
+    echo "bluetooth-audio: pcm level tap missing"
+fi
+
 if command -v bt-agent >/dev/null 2>&1; then
     echo "bluetooth: bt-agent installed"
 else
@@ -4952,6 +5090,21 @@ if proc_name_live bluealsa-aplay; then
     ps | grep '[b]luealsa-aplay' 2>/dev/null || true
 else
     echo "bluetooth-audio: bluealsa-aplay not running"
+fi
+
+if pid_file_live /run/nq-bluetooth-tap.pid; then
+    echo "bluetooth-audio: tap player running"
+elif proc_name_live bluealsa-cli; then
+    echo "bluetooth-audio: tap player running without pid file"
+else
+    echo "bluetooth-audio: tap player not running"
+fi
+
+if proc_name_live bluealsa-cli; then
+    ps | grep '[b]luealsa-cli' 2>/dev/null || true
+fi
+if proc_name_live nq-pcm-level-tap; then
+    ps | grep '[n]q-pcm-level-tap' 2>/dev/null || true
 fi
 
 if pid_file_live /run/nq-bluetooth-audio-monitor.pid; then
@@ -5221,6 +5374,35 @@ exec /bin/sh
     write_text(rootfs / "etc/fstab", "proc /proc proc defaults 0 0\n")
     write_text(rootfs / "etc/resolv.conf", "nameserver 1.1.1.1\n")
     write_text(rootfs / "etc/motd", "Nexus Q Debian trixie armhf rootfs\n")
+    write_text(
+        rootfs / "etc/asound.conf",
+        """pcm.nexusq48 {
+    type plug
+    slave {
+        pcm "hw:0,0"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+
+ctl.nexusq48 {
+    type hw
+    card 0
+}
+
+pcm.!default {
+    type plug
+    slave.pcm "nexusq48"
+}
+
+ctl.!default {
+    type hw
+    card 0
+}
+""",
+        0o644,
+    )
     write_text(
         rootfs / "etc/nexusq/README",
         """Nexus Q appliance provisioning
