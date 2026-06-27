@@ -1159,6 +1159,7 @@ export PATH
 
 LOG=/run/nexusq-bluetooth.log
 PID=/run/nq-bluetoothd.pid
+AGENT_PID=/run/nq-bt-agent.pid
 mkdir -p /run /run/nexusq
 : >"$LOG"
 exec >>"$LOG" 2>&1
@@ -1177,6 +1178,8 @@ done
 : "${NQ_BLUETOOTH_DISCOVERABLE:=1}"
 : "${NQ_BLUETOOTH_RESTART:=0}"
 : "${NQ_BLUETOOTH_A2DP_ENABLE:=0}"
+: "${NQ_BLUETOOTH_AGENT_ENABLE:=1}"
+: "${NQ_BLUETOOTH_AGENT_CAPABILITY:=NoInputNoOutput}"
 
 pid_live() {
     pid="$1"
@@ -1185,6 +1188,47 @@ pid_live() {
     state="$(awk '/^State:/ { print $2; exit }' "/proc/$pid/status" 2>/dev/null || true)"
     [ "$state" = "Z" ] && return 1
     kill -0 "$pid" 2>/dev/null
+}
+
+stop_pid_file() {
+    pid_file="$1"
+    [ -s "$pid_file" ] || return 0
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    pid_live "$pid" && kill "$pid" 2>/dev/null || true
+    rm -f "$pid_file"
+}
+
+start_pairing_agent() {
+    [ "$NQ_BLUETOOTH_AGENT_ENABLE" = "1" ] || return 0
+    if ! command -v bt-agent >/dev/null 2>&1; then
+        echo "[nq-bluetooth] bt-agent missing; pairing may require manual bluetoothctl"
+        return 0
+    fi
+
+    if [ -s "$AGENT_PID" ]; then
+        old_pid="$(cat "$AGENT_PID" 2>/dev/null || true)"
+        if pid_live "$old_pid"; then
+            echo "[nq-bluetooth] pairing agent already running pid=$old_pid"
+            return 0
+        fi
+        rm -f "$AGENT_PID"
+    fi
+
+    set -- bt-agent --capability="$NQ_BLUETOOTH_AGENT_CAPABILITY"
+    echo "[nq-bluetooth] exec: $*"
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$@" &
+    else
+        "$@" &
+    fi
+    echo "$!" >"$AGENT_PID"
+    sleep 1
+    if pid_live "$(cat "$AGENT_PID" 2>/dev/null || true)"; then
+        echo "[nq-bluetooth] pairing agent ready"
+    else
+        echo "[nq-bluetooth] pairing agent failed to stay running"
+        rm -f "$AGENT_PID"
+    fi
 }
 
 derive_bt_addr() {
@@ -1215,10 +1259,9 @@ fi
     exit 1
 }
 
-if [ "$NQ_BLUETOOTH_RESTART" = "1" ] && [ -s "$PID" ]; then
-    old_pid="$(cat "$PID" 2>/dev/null || true)"
-    pid_live "$old_pid" && kill "$old_pid" 2>/dev/null || true
-    rm -f "$PID"
+if [ "$NQ_BLUETOOTH_RESTART" = "1" ]; then
+    stop_pid_file "$AGENT_PID"
+    stop_pid_file "$PID"
 fi
 
 if [ -s "$PID" ]; then
@@ -1262,6 +1305,8 @@ if command -v btmgmt >/dev/null 2>&1; then
     [ "$NQ_BLUETOOTH_DISCOVERABLE" = "1" ] && btmgmt discoverable on 2>/dev/null || true
     btmgmt info 2>/dev/null || true
 fi
+
+start_pairing_agent
 
 if command -v bluetoothctl >/dev/null 2>&1; then
     bluetoothctl show 2>/dev/null || true
@@ -4712,6 +4757,12 @@ else
     echo "bluetooth-audio: bluealsa-aplay missing"
 fi
 
+if command -v bt-agent >/dev/null 2>&1; then
+    echo "bluetooth: bt-agent installed"
+else
+    echo "bluetooth: bt-agent missing"
+fi
+
 if ls /sys/class/nfc/nfc* >/dev/null 2>&1; then
     for dev in /sys/class/nfc/nfc*; do
         [ -e "$dev" ] || continue
@@ -4850,6 +4901,12 @@ if proc_name_live bluetoothd; then
     echo "bluetooth: bluetoothd running"
 else
     echo "bluetooth: bluetoothd not running"
+fi
+
+if proc_name_live bt-agent; then
+    echo "bluetooth: pairing agent running"
+else
+    echo "bluetooth: pairing agent not running"
 fi
 
 if proc_name_live bluealsa; then

@@ -6,6 +6,8 @@ This spike builds on `BLUETOOTH_HCI_SPIKE.md`. The controller already reaches
 ## Scope
 
 - Start `bluetoothd` through the existing `/sbin/nq-start-bluetooth` path.
+- Register a `NoInputNoOutput` pairing agent so a phone can pair without
+  keyboard/display confirmation on the Q.
 - Start `bluealsa` with the `a2dp-sink` profile.
 - Start `bluealsa-aplay` so incoming Bluetooth audio plays through the Nexus Q
   ALSA output.
@@ -25,6 +27,7 @@ NQ_BLUETOOTH_ENABLE=1
 NQ_BLUETOOTH_ALIAS='Nexus Q'
 NQ_BLUETOOTH_PAIRABLE=1
 NQ_BLUETOOTH_DISCOVERABLE=1
+NQ_BLUETOOTH_AGENT_ENABLE=1
 NQ_BLUETOOTH_A2DP_ENABLE=1
 NQ_BLUETOOTH_A2DP_RESTART=1
 NQ_BLUETOOTH_A2DP_PCM=plughw:0,0
@@ -38,9 +41,14 @@ EOF
 The expected process state is:
 
 - `bluetoothd` running
+- `bt-agent --capability=NoInputNoOutput` running
 - `bluealsa -p a2dp-sink` running
 - `bluealsa-aplay --profile-a2dp ...` running
 - `/run/nq-bluetooth-audio-monitor.pid` live
+
+From the phone, pair with `Nexus Q`, connect it for media audio, and start
+playback. Once the phone is streaming, `bluealsa-aplay --list-pcms` should show
+an A2DP PCM and `nq-audio-owner status` should report `bluetooth streaming`.
 
 Useful logs:
 
