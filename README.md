@@ -3,15 +3,17 @@
 Modern Linux for Google's abandoned spherical streaming box.
 
 This project brings the Nexus Q / Steelhead back as a small Debian-based
-network audio target. The current public release boots Debian 13.5 armhf from
+network audio target. The current release boots Debian 13.5 armhf from
 `userdata` with a Linux 6.6.142 kernel installed to the normal `boot`
-partition. Current `main` is ahead of that release and now contains the
-standalone SomaFM NFC jukebox appliance baseline.
+partition, then starts a standalone SomaFM NFC jukebox with live LED
+visualization, physical volume control, SSH/ADB bring-up paths, and opt-in
+Bluetooth A2DP playback.
 
 ## Current Status
 
-Validated on real Nexus Q hardware in June 2026. Current `main` is now focused
-on the standalone SomaFM NFC jukebox path:
+Validated on real Nexus Q hardware in June 2026. The current appliance release
+is focused on standalone local playback first, with network and Bluetooth
+targets available for experiments:
 
 - Linux 6.6.142 no-SMP boots from the normal `boot` partition.
 - Debian 13.5 armhf runs from a sparse ext4 image flashed to `userdata`.
@@ -31,18 +33,21 @@ on the standalone SomaFM NFC jukebox path:
 - The built-in PN544 NFC path has been validated for UID scans and
   UID-to-station playback through the jukebox loop; external NFC readers remain
   supported as a fallback.
-- Opt-in Squeezelite endpoint support remains available for Music Assistant
-  playback.
-- Bluetooth controller bring-up is opt-in and validated to HCI; an A2DP sink
-  spike adds BlueALSA playback and Bluetooth audio priority plumbing.
+- Opt-in Squeezelite endpoint support remains available for legacy Music
+  Assistant playback.
+- Bluetooth A2DP sink support is opt-in and validated with BlueALSA playback,
+  Android pairing, local-audio priority takeover, live visualizer levels, and
+  higher-quality codec support including aptX-HD on the tested Pixel path.
 - The Nexus Q top ring controls TAS5713 hardware volume through the front-panel
   AVR input driver and `nq-knob-volume`.
 - The LED ring is controllable through `/dev/leds`; the default visualizer runs
   at 60 fps, follows standalone SomaFM playback through the PCM level tap, and
   renders adaptive bass/mid/high color pulses with slowly rotating animation
   and tuned decay.
-- The same visualizer can still follow Squeezelite playback through its
-  shared-memory visualizer export when Squeezelite is enabled.
+- The top power LED is controlled by the same visualizer and cycles through a
+  playback-active rainbow while audio is active.
+- The same visualizer can still follow Bluetooth A2DP or Squeezelite playback
+  when those optional paths are enabled.
 - An opt-in ADB-compatible debug bridge provides root Bash shell and file sync
   for trusted local bring-up networks.
 - The public boot image stays running by default; return-to-fastboot is now an
@@ -53,7 +58,8 @@ Still experimental:
 - The standalone jukebox is functional on real hardware, but long-duration
   unattended appliance soak testing is still pending.
 - Full systemd service bring-up is not the default init path.
-- HDMI, S/PDIF, cap-touch handling, and richer visualizer algorithms such as
+- HDMI, S/PDIF, cap-touch handling, AVRCP media controls, Chromecast receiver
+  behavior, USB-host storage playback, and richer visualizer algorithms such as
   FFT-based analysis are not finished.
 - The LED visualizer is a local amplitude/coarse-band effect, not a full FFT or
   Music Assistant UI-integrated visualizer yet.
@@ -80,26 +86,24 @@ History links:
 
 ## Release Artifacts
 
-The v0.4.0 release assets are:
+The v0.5.0 release assets are:
 
 - `nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img`
   - Android boot image for `fastboot flash boot`
   - Linux 6.6.142, no-SMP, USB ACM+ECM, TAS5713 speaker playback, modular
-    BCM4330 Wi-Fi
+    BCM4330 Wi-Fi, modular PN544 NFC, front-panel AVR, and Bluetooth
+    controller support
 - `nexusq-debian-trixie-armhf-rootfs.sparse.img`
   - Android sparse image for `fastboot flash userdata`
-  - Debian 13.5 armhf rootfs
-- `SHA256SUMS-v0.4.0.txt`
+  - Debian 13.5 armhf rootfs with SomaFM/NFC jukebox, LED visualizer, knob
+    volume daemon, BlueALSA A2DP support, Dropbear SSH, and trusted-local ADB
+- `SHA256SUMS-v0.5.0.txt`
 
 Download them from:
 
-<https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.4.0>
+<https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.5.0>
 
-Release notes are in [RELEASE_NOTES_v0.4.0.md](RELEASE_NOTES_v0.4.0.md).
-
-Note: v0.4.0 is the appliance platform baseline release. The current
-SomaFM/NFC jukebox and animated LED visualizer baseline landed on `main` after
-v0.4.0; build from `main` until the next release artifact is published.
+Release notes are in [RELEASE_NOTES_v0.5.0.md](RELEASE_NOTES_v0.5.0.md).
 
 ## Flash And Boot
 
@@ -129,7 +133,7 @@ LED ring control and the local playback visualizer are documented in
 The SomaFM NFC jukebox is documented in [NFC_JUKEBOX.md](NFC_JUKEBOX.md).
 Bluetooth controller bring-up notes are in
 [BLUETOOTH_HCI_SPIKE.md](BLUETOOTH_HCI_SPIKE.md).
-Bluetooth A2DP sink spike notes are in
+Bluetooth A2DP sink notes are in
 [BLUETOOTH_A2DP_SPIKE.md](BLUETOOTH_A2DP_SPIKE.md).
 
 ## Build

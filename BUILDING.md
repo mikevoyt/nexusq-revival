@@ -71,7 +71,7 @@ Outputs:
 artifacts/nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img
 artifacts/nexusq-debian-trixie-armhf-rootfs.ext4
 artifacts/nexusq-debian-trixie-armhf-rootfs.sparse.img
-artifacts/SHA256SUMS-v0.4.0.txt
+artifacts/SHA256SUMS-v0.5.0.txt
 ```
 
 The boot image is intended for `fastboot flash boot`. The sparse image is the

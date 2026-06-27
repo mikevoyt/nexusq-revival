@@ -15,14 +15,14 @@
       <a href="https://github.com/mikevoyt/nexusq-revival">GitHub</a>
       <a href="https://github.com/mikevoyt/nexusq-revival/releases">Releases</a>
       <a href="https://github.com/mikevoyt/nexusq-revival/blob/main/BUILDING.md">Build</a>
-      <a href="https://github.com/mikevoyt/nexusq-revival/blob/main/MUSIC_ASSISTANT.md">Music Assistant</a>
+      <a href="https://github.com/mikevoyt/nexusq-revival/blob/main/NFC_JUKEBOX.md">SomaFM Jukebox</a>
     </nav>
     <div class="hero__content">
       <p class="eyebrow">Google Nexus Q / Steelhead</p>
       <h1>Nexus Q Revival</h1>
-      <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, and TAS5713 speaker playback.</p>
+      <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, TAS5713 speaker playback, NFC station cards, live LEDs, and Bluetooth A2DP.</p>
       <div class="hero__actions">
-        <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.3.0">Download v0.3.0</a>
+        <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.5.0">Download v0.5.0</a>
         <a class="button" href="https://github.com/mikevoyt/nexusq-revival/blob/main/FLASHING.md">Flash Guide</a>
       </div>
     </div>
@@ -37,7 +37,7 @@
         </div>
         <div class="prose">
           <p>Google introduced Nexus Q at I/O 2012 as a $299 Android-controlled social streaming device for the living room. The consumer launch was postponed soon after, leaving a small population of preview units and a lot of unused hardware.</p>
-          <p>This project turns that hardware into a modern embedded Linux audio target, with a path toward a custom Android control app and network music streaming.</p>
+          <p>This project turns that hardware into a modern embedded Linux audio appliance with local internet radio, physical station cards, visual feedback, and a path toward richer phone-controlled playback.</p>
         </div>
       </div>
     </section>
@@ -67,6 +67,16 @@
             <strong>TAS5713 ALSA</strong>
             <p>48 kHz PCM and MP3 playback validated on the internal speaker path.</p>
           </article>
+          <article class="status-card">
+            <span>Appliance</span>
+            <strong>SomaFM + NFC</strong>
+            <p>Printed station cards start on-device radio playback with live LED feedback.</p>
+          </article>
+          <article class="status-card">
+            <span>Bluetooth</span>
+            <strong>A2DP Sink</strong>
+            <p>Android media audio can stream through BlueALSA into the Q playback path.</p>
+          </article>
         </div>
       </div>
     </section>
@@ -82,7 +92,10 @@
           <li>Added a Linux 6.6 ASoC machine driver and Steelhead ABE clock quirk for the internal speaker amplifier path.</li>
           <li>Built a Debian loader and minimal rootfs init with USB serial, explicit fastboot recovery, Wi-Fi startup, and Dropbear.</li>
           <li>Moved public Wi-Fi from embedded private blobs to modular `brcmfmac` plus first-boot calibration extraction.</li>
-          <li>Validated an opt-in Squeezelite endpoint so Music Assistant can treat the Q as a native network player.</li>
+          <li>Added a standalone SomaFM jukebox that maps NFC tag UIDs to station ids and starts local stream playback.</li>
+          <li>Built a live LED visualizer for SomaFM and Bluetooth playback, including loading cues and top-LED playback status.</li>
+          <li>Validated an opt-in Bluetooth A2DP sink path with BlueALSA, visualizer levels, and audio-priority takeover.</li>
+          <li>Kept opt-in Squeezelite endpoint support available for legacy Music Assistant experiments.</li>
           <li>Connected the original top ring to TAS5713 hardware volume through the front-panel AVR input driver.</li>
           <li>Added an opt-in ADB-compatible debug bridge with root Bash shell and file sync for trusted bring-up networks.</li>
           <li>Documented the <a href="https://github.com/mikevoyt/nexusq-revival/blob/main/AUDIO_CLOCK_FIX.md">ABE DPLL clock fix</a> that removed the Linux 6.6 speaker flutter.</li>
@@ -94,8 +107,8 @@
       <div class="wrap two-col">
         <div>
           <p class="section-kicker">Release</p>
-          <h2>v0.3.0</h2>
-          <p class="prose">Flash Debian to <code>userdata</code>, install the Linux 6.6 image to <code>boot</code>, and reboot into a Music Assistant-capable Nexus Q player with local ring volume.</p>
+          <h2>v0.5.0</h2>
+          <p class="prose">Flash Debian to <code>userdata</code>, install the Linux 6.6 image to <code>boot</code>, and reboot into a standalone SomaFM/NFC Nexus Q player with live LEDs, local volume, SSH/ADB, and opt-in Bluetooth A2DP.</p>
         </div>
         <div class="commands" aria-label="Fastboot commands">
           <code>fastboot flash boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img</code>
