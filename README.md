@@ -33,6 +33,8 @@ on the standalone SomaFM NFC jukebox path:
   supported as a fallback.
 - Opt-in Squeezelite endpoint support remains available for Music Assistant
   playback.
+- Bluetooth controller bring-up is opt-in and validated to HCI; an A2DP sink
+  spike adds BlueALSA playback and Bluetooth audio priority plumbing.
 - The Nexus Q top ring controls TAS5713 hardware volume through the front-panel
   AVR input driver and `nq-knob-volume`.
 - The LED ring is controllable through `/dev/leds`; the default visualizer runs
@@ -125,6 +127,10 @@ Music Assistant player endpoint setup is documented in
 LED ring control and the local playback visualizer are documented in
 [LED_RING_VISUALIZER.md](LED_RING_VISUALIZER.md).
 The SomaFM NFC jukebox is documented in [NFC_JUKEBOX.md](NFC_JUKEBOX.md).
+Bluetooth controller bring-up notes are in
+[BLUETOOTH_HCI_SPIKE.md](BLUETOOTH_HCI_SPIKE.md).
+Bluetooth A2DP sink spike notes are in
+[BLUETOOTH_A2DP_SPIKE.md](BLUETOOTH_A2DP_SPIKE.md).
 
 ## Build
 
