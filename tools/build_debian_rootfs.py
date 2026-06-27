@@ -1390,6 +1390,7 @@ done
 : "${NQ_BLUETOOTH_A2DP_LEVEL_UPDATE_MS:=16}"
 : "${NQ_BLUETOOTH_A2DP_TAP_AUDIO_DELAY_MS:=0}"
 : "${NQ_BLUETOOTH_A2DP_INPUT_FORMAT:=}"
+: "${NQ_BLUETOOTH_A2DP_TAP_POLL_INTERVAL:=0.1}"
 : "${NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME:=20000}"
 : "${NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME:=80000}"
 : "${NQ_BLUETOOTH_A2DP_MONITOR:=1}"
@@ -1521,7 +1522,7 @@ start_tap_player() {
                     nq-audio-owner release bluetooth 2>/dev/null || true
                     active=0
                 fi
-                sleep "$NQ_BLUETOOTH_A2DP_MONITOR_INTERVAL"
+                sleep "$NQ_BLUETOOTH_A2DP_TAP_POLL_INTERVAL"
                 continue
             fi
 

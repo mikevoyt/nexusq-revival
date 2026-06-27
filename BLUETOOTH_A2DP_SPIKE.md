@@ -88,6 +88,12 @@ The live Pixel 9 Pro retest passed after deploying the conversion path:
 `aptX-HD`, `S24_LE`, stereo 48 kHz, Bluetooth volume `127/127`, nonzero
 visualizer levels, and clean audible playback on the Nexus Q.
 
+The initial live run logged a burst of BlueALSA `PCM overrun` warnings during
+stream startup, but the count did not increase during a 15-second steady
+playback window. The tap worker now polls for a newly exposed A2DP PCM every
+100 ms while idle, reducing the startup window where BlueALSA can decode before
+the PCM reader is attached.
+
 For byte-alignment experiments, set `NQ_BLUETOOTH_A2DP_INPUT_FORMAT=S32_LE` in
 the runtime env to force the tap to treat 24-in-32 PCM as high-aligned.
 
