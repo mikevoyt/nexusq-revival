@@ -1241,6 +1241,35 @@ derive_bt_addr() {
         head -n 1
 }
 
+normalize_bt_addr() {
+    printf '%s\n' "$1" | tr 'A-F' 'a-f'
+}
+
+current_bt_addr() {
+    btmgmt info 2>/dev/null |
+        awk '
+            $1 == "addr" {
+                for (i = 1; i <= NF; i++) {
+                    if ($i == "addr") {
+                        print $(i + 1)
+                        exit
+                    }
+                }
+            }
+        '
+}
+
+apply_bluetoothctl_settings() {
+    command -v bluetoothctl >/dev/null 2>&1 || return 0
+    {
+        echo "power on"
+        echo "pairable on"
+        echo "discoverable-timeout 0"
+        [ "$NQ_BLUETOOTH_DISCOVERABLE" = "1" ] && echo "discoverable on"
+        echo "show"
+    } | bluetoothctl 2>/dev/null || true
+}
+
 echo "[nq-bluetooth] starting"
 date 2>/dev/null || true
 
@@ -1288,9 +1317,13 @@ if command -v btmgmt >/dev/null 2>&1; then
     bt_addr="$(derive_bt_addr | head -n 1)"
     case "$bt_addr" in
         [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
-            echo "[nq-bluetooth] setting controller address: $bt_addr"
-            btmgmt power off 2>/dev/null || true
-            btmgmt public-addr "$bt_addr" 2>/dev/null || true
+            current_addr="$(current_bt_addr | head -n 1)"
+            if [ "$(normalize_bt_addr "$current_addr")" != "$(normalize_bt_addr "$bt_addr")" ]; then
+                echo "[nq-bluetooth] setting controller address: $bt_addr"
+                btmgmt power off 2>/dev/null || true
+                btmgmt public-addr "$bt_addr" 2>/dev/null || true
+                sleep 1
+            fi
             ;;
         "")
             ;;
@@ -1302,15 +1335,13 @@ if command -v btmgmt >/dev/null 2>&1; then
     btmgmt name "$NQ_BLUETOOTH_ALIAS" 2>/dev/null || true
     btmgmt connectable on 2>/dev/null || true
     [ "$NQ_BLUETOOTH_PAIRABLE" = "1" ] && btmgmt pairable on 2>/dev/null || true
-    [ "$NQ_BLUETOOTH_DISCOVERABLE" = "1" ] && btmgmt discoverable on 2>/dev/null || true
+    [ "$NQ_BLUETOOTH_DISCOVERABLE" = "1" ] && btmgmt discov on 2>/dev/null || true
     btmgmt info 2>/dev/null || true
 fi
 
 start_pairing_agent
 
-if command -v bluetoothctl >/dev/null 2>&1; then
-    bluetoothctl show 2>/dev/null || true
-fi
+apply_bluetoothctl_settings
 
 if [ "$NQ_BLUETOOTH_A2DP_ENABLE" = "1" ] && [ -x /sbin/nq-start-bluetooth-audio ]; then
     /sbin/nq-start-bluetooth-audio || true
