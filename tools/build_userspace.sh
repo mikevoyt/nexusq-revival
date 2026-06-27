@@ -4,6 +4,9 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 LOCAL_CC="$ROOT/build/toolchains/armv5l-linux-musleabi-cross/bin/armv5l-linux-musleabi-gcc"
 CC="${CC:-}"
+ZIG="${ZIG:-}"
+ZIG_TARGET="${ZIG_TARGET:-arm-linux-musleabihf}"
+ZIG_CFLAGS="${ZIG_CFLAGS:--include sys/ioctl.h}"
 FORCE_DOCKER="${FORCE_DOCKER:-0}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-ubuntu:20.04}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
@@ -22,15 +25,25 @@ build_with_docker() {
 		-static -Os -Wall "$@"
 }
 
+build_with_zig() {
+	"$ZIG" cc -target "$ZIG_TARGET" -static -Os -Wall $ZIG_CFLAGS "$@"
+}
+
 build() {
 	if [ "$FORCE_DOCKER" != 1 ] && [ -z "$CC" ] && [ -x "$LOCAL_CC" ] &&
 		"$LOCAL_CC" --version >/dev/null 2>&1; then
 		CC="$LOCAL_CC"
 	fi
+	if [ "$FORCE_DOCKER" != 1 ] && [ -z "$CC" ] && [ -z "$ZIG" ] &&
+		command -v zig >/dev/null 2>&1; then
+		ZIG="$(command -v zig)"
+	fi
 
 	if [ "$FORCE_DOCKER" != 1 ] && [ -n "$CC" ]; then
 		CC="${CC:-$LOCAL_CC}"
 		build_with_cc "$@"
+	elif [ "$FORCE_DOCKER" != 1 ] && [ -n "$ZIG" ]; then
+		build_with_zig "$@"
 	else
 		build_with_docker "$@"
 	fi
