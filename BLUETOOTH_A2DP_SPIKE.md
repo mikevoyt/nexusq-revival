@@ -71,6 +71,31 @@ bluealsa-cli info /org/bluealsa/hci0/dev_XX_XX_XX_XX_XX_XX/a2dpsnk/source
 bluealsa-cli codec /org/bluealsa/hci0/dev_XX_XX_XX_XX_XX_XX/a2dpsnk/source aptX-HD
 ```
 
+## AVRCP Media-Control Groundwork
+
+The rootfs includes `nq-bluetooth-player`, a small BlueZ D-Bus helper for the
+phone-side AVRCP media-control surface. It does not change daemon behavior yet;
+it gives us a reproducible command-line probe before binding physical Q inputs
+to phone playback controls.
+
+Useful commands:
+
+```sh
+nq-bluetooth-player status
+nq-bluetooth-player devices
+nq-bluetooth-player play
+nq-bluetooth-player pause
+nq-bluetooth-player toggle
+nq-bluetooth-player next
+nq-bluetooth-player previous
+```
+
+`status` reports paired devices that expose `org.bluez.MediaControl1` and, when
+BlueZ exposes one for the active AVRCP session, the current
+`org.bluez.MediaPlayer1` object and raw track/status properties. The explicit
+control commands call BlueZ `MediaControl1` methods on the active media-capable
+device.
+
 ## Current Codec Result
 
 The first Pixel 9 Pro baseline negotiated SBC at 44.1 kHz with bitpool 53,

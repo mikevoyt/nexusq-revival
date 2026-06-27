@@ -1717,6 +1717,210 @@ echo "[nq-bluetooth-audio] ready"
         0o755,
     )
     write_text(
+        rootfs / "usr/sbin/nq-bluetooth-player",
+        """#!/bin/sh
+
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH
+
+usage() {
+    cat <<'EOF'
+Usage: nq-bluetooth-player [status|devices|play|pause|stop|next|previous|volume-up|volume-down|toggle]
+
+Inspect and control the active BlueZ AVRCP media player.
+EOF
+}
+
+need_busctl() {
+    command -v busctl >/dev/null 2>&1 || {
+        echo "nq-bluetooth-player: busctl is not installed" >&2
+        exit 1
+    }
+}
+
+bluez_paths() {
+    busctl --list tree org.bluez 2>/dev/null |
+        awk '/^\\/org\\/bluez/ { print }'
+}
+
+get_prop() {
+    path="$1"
+    interface="$2"
+    prop="$3"
+    busctl get-property org.bluez "$path" "$interface" "$prop" 2>/dev/null || true
+}
+
+value_string() {
+    sed -n 's/^s "\\(.*\\)"$/\\1/p'
+}
+
+value_bool() {
+    awk '$1 == "b" { print $2; exit }'
+}
+
+value_object() {
+    sed -n 's/^o "\\(.*\\)"$/\\1/p'
+}
+
+device_has_media_control() {
+    path="$1"
+    get_prop "$path" org.bluez.MediaControl1 Connected | grep -q '^b '
+}
+
+device_name() {
+    path="$1"
+    name="$(get_prop "$path" org.bluez.Device1 Alias | value_string)"
+    [ -n "$name" ] || name="$(get_prop "$path" org.bluez.Device1 Name | value_string)"
+    printf '%s\\n' "$name"
+}
+
+media_devices() {
+    for path in $(bluez_paths | grep '/dev_' 2>/dev/null || true); do
+        device_has_media_control "$path" || continue
+        printf '%s\\n' "$path"
+    done
+}
+
+active_device() {
+    first=
+    first_connected=
+    for path in $(media_devices); do
+        [ -n "$first" ] || first="$path"
+        media_connected="$(get_prop "$path" org.bluez.MediaControl1 Connected | value_bool)"
+        device_connected="$(get_prop "$path" org.bluez.Device1 Connected | value_bool)"
+        if [ "$media_connected" = "true" ]; then
+            printf '%s\\n' "$path"
+            return 0
+        fi
+        if [ "$device_connected" = "true" ] && [ -z "$first_connected" ]; then
+            first_connected="$path"
+        fi
+    done
+    [ -z "$first_connected" ] || {
+        printf '%s\\n' "$first_connected"
+        return 0
+    }
+    [ -z "$first" ] || {
+        printf '%s\\n' "$first"
+        return 0
+    }
+    return 1
+}
+
+player_path_for_device() {
+    path="$1"
+    player="$(get_prop "$path" org.bluez.MediaControl1 Player | value_object)"
+    [ -n "$player" ] || player="$(bluez_paths | awk -v base="$path/" 'index($0, base) == 1 && /\\/player[0-9]+$/ { print; exit }')"
+    printf '%s\\n' "$player"
+}
+
+first_player_path() {
+    for path in $(media_devices); do
+        player="$(player_path_for_device "$path")"
+        [ -z "$player" ] || {
+            printf '%s\\n' "$player"
+            return 0
+        }
+    done
+    return 1
+}
+
+print_devices() {
+    found=0
+    for path in $(media_devices); do
+        found=1
+        name="$(device_name "$path")"
+        paired="$(get_prop "$path" org.bluez.Device1 Paired | value_bool)"
+        connected="$(get_prop "$path" org.bluez.Device1 Connected | value_bool)"
+        media_connected="$(get_prop "$path" org.bluez.MediaControl1 Connected | value_bool)"
+        player="$(player_path_for_device "$path")"
+        echo "device: $path"
+        echo "  name: ${name:-unknown}"
+        echo "  paired: ${paired:-unknown}"
+        echo "  connected: ${connected:-unknown}"
+        echo "  media-control-connected: ${media_connected:-unknown}"
+        echo "  player: ${player:-none}"
+    done
+    [ "$found" = "1" ] || echo "device: none with org.bluez.MediaControl1"
+}
+
+print_player_status() {
+    player="$1"
+    [ -n "$player" ] || {
+        echo "player: none"
+        return 0
+    }
+    echo "player: $player"
+    for prop in Name Type Subtype Status Position; do
+        value="$(get_prop "$player" org.bluez.MediaPlayer1 "$prop")"
+        [ -z "$value" ] || echo "  $prop: $value"
+    done
+    track="$(get_prop "$player" org.bluez.MediaPlayer1 Track)"
+    [ -z "$track" ] || echo "  Track: $track"
+}
+
+print_status() {
+    device="$(active_device || true)"
+    if [ -z "$device" ]; then
+        echo "bluetooth-player: no paired AVRCP media-control device"
+        print_devices
+        return 0
+    fi
+    name="$(device_name "$device")"
+    echo "bluetooth-player: device=$device name=${name:-unknown}"
+    echo "  connected: $(get_prop "$device" org.bluez.Device1 Connected | value_bool)"
+    echo "  media-control-connected: $(get_prop "$device" org.bluez.MediaControl1 Connected | value_bool)"
+    print_player_status "$(player_path_for_device "$device")"
+}
+
+call_media() {
+    method="$1"
+    device="$(active_device || true)"
+    [ -n "$device" ] || {
+        echo "nq-bluetooth-player: no AVRCP media-control device found" >&2
+        return 1
+    }
+    if busctl call org.bluez "$device" org.bluez.MediaControl1 "$method" >/dev/null; then
+        echo "bluetooth-player: $method sent to $device"
+        return 0
+    fi
+    echo "nq-bluetooth-player: $method failed for $device" >&2
+    return 1
+}
+
+toggle_playback() {
+    player="$(first_player_path || true)"
+    status=
+    [ -z "$player" ] || status="$(get_prop "$player" org.bluez.MediaPlayer1 Status | value_string)"
+    case "$status" in
+        playing) call_media Pause ;;
+        *) call_media Play ;;
+    esac
+}
+
+need_busctl
+cmd="${1:-status}"
+case "$cmd" in
+    -h|--help|help) usage ;;
+    status) print_status ;;
+    devices) print_devices ;;
+    play) call_media Play ;;
+    pause) call_media Pause ;;
+    stop) call_media Stop ;;
+    next) call_media Next ;;
+    previous|prev) call_media Previous ;;
+    volume-up|vol-up) call_media VolumeUp ;;
+    volume-down|vol-down) call_media VolumeDown ;;
+    toggle) toggle_playback ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+""",
+        0o755,
+    )
+    write_text(
         rootfs / "sbin/nq-load-wifi",
         """#!/bin/sh
 
@@ -5145,6 +5349,10 @@ fi
 
 if command -v bluealsa-aplay >/dev/null 2>&1; then
     bluealsa-aplay --list-pcms 2>/dev/null || true
+fi
+
+if command -v nq-bluetooth-player >/dev/null 2>&1; then
+    nq-bluetooth-player status 2>/dev/null || true
 fi
 
 if ps | grep '[n]q-led-visualiz' >/dev/null 2>&1; then
