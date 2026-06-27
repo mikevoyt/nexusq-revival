@@ -177,24 +177,31 @@ Music Assistant setup notes.
 
 ## Bluetooth Controller Spike
 
-Bluetooth bring-up is opt-in while the A2DP sink is still being built. A test
-image can persist the controller enable flag with:
+Bluetooth bring-up is opt-in while the A2DP sink is being validated. A test
+image can persist the controller and A2DP enable flags with:
 
 ```sh
 cat >/run/nexusq/bluetooth.env <<'EOF'
 NQ_BLUETOOTH_ENABLE=1
 NQ_BLUETOOTH_ALIAS='Nexus Q'
+NQ_BLUETOOTH_PAIRABLE=1
+NQ_BLUETOOTH_DISCOVERABLE=1
+NQ_BLUETOOTH_AGENT_ENABLE=1
+NQ_BLUETOOTH_A2DP_ENABLE=1
+NQ_BLUETOOTH_A2DP_PCM=plughw:0,0
 EOF
 
 /sbin/nq-provision --bluetooth /run/nexusq/bluetooth.env --start-bluetooth --status
 ```
 
-When a later Bluetooth audio sink claims `nq-audio-owner bluetooth`, SomaFM NFC
-taps and the default boot station yield instead of stealing playback. The LED
-visualizer should follow whichever source owns `/run/nexusq-audio-levels`.
+When the A2DP monitor sees a Bluetooth PCM, it claims
+`nq-audio-owner bluetooth` so SomaFM NFC taps and the default boot station yield
+instead of stealing playback. Live Bluetooth visualizer levels are still the
+next follow-up after phone playback is validated.
 
 See [BLUETOOTH_HCI_SPIKE.md](BLUETOOTH_HCI_SPIKE.md) for wiring, firmware, and
-diagnostic details.
+diagnostic details. See [BLUETOOTH_A2DP_SPIKE.md](BLUETOOTH_A2DP_SPIKE.md) for
+the current BlueALSA playback path and test knobs.
 
 ## SomaFM NFC Jukebox
 
