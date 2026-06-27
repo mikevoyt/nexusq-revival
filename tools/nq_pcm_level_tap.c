@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Process raw S16_LE PCM from stdin to stdout while publishing audio levels.
+ * Process raw PCM from stdin to S16_LE stdout while publishing audio levels.
  *
  * This is intentionally small: mpg123 decodes/resamples, aplay owns ALSA, and
  * this process handles the Nexus Q's visualizer tap plus lightweight stream
@@ -30,6 +30,7 @@ struct options {
 	int update_ms;
 	int rate;
 	int channels;
+	int input_format;
 	int audio_delay_ms;
 	int startup_mute_ms;
 	int startup_fade_ms;
@@ -76,6 +77,17 @@ struct pcm_delay {
 	bool saw_input;
 };
 
+enum input_format {
+	INPUT_FORMAT_S16_LE,
+	INPUT_FORMAT_S24_LE,
+	INPUT_FORMAT_S32_LE,
+};
+
+struct input_pcm {
+	uint8_t carry[4];
+	size_t carry_len;
+};
+
 static volatile sig_atomic_t keep_running = 1;
 
 static const struct chime_note chime_notes[MAX_CHIME_NOTES] = {
@@ -96,12 +108,14 @@ static void usage(const char *argv0)
 	fprintf(stderr,
 		"usage: %s [--levels PATH] [--update-ms N]\n"
 		"\n"
-		"Reads S16_LE PCM from stdin, writes PCM to stdout, and publishes\n"
+		"Reads raw PCM from stdin, writes S16_LE PCM to stdout, and publishes\n"
 		"visualizer levels to PATH. Default PATH is %s.\n"
 		"\n"
 		"Optional startup gate:\n"
 		"  --rate N              PCM frame rate. Default 48000.\n"
 		"  --channels N          PCM channels. Default 2.\n"
+		"  --input-format F      Input format: S16_LE, S24_LE, S32_LE.\n"
+		"                        Output is always S16_LE. Default S16_LE.\n"
 		"  --audio-delay-ms N    Delay output PCM after metering. Default 0.\n"
 		"  --startup-mute-ms N   Output silence for initial decoded PCM.\n"
 		"  --startup-fade-ms N   Fade in after startup mute.\n"
@@ -128,6 +142,23 @@ static int parse_int(const char *s, int min, int max, int *out)
 	return 0;
 }
 
+static int parse_input_format(const char *s, int *out)
+{
+	if (strcmp(s, "S16_LE") == 0) {
+		*out = INPUT_FORMAT_S16_LE;
+		return 0;
+	}
+	if (strcmp(s, "S24_LE") == 0) {
+		*out = INPUT_FORMAT_S24_LE;
+		return 0;
+	}
+	if (strcmp(s, "S32_LE") == 0) {
+		*out = INPUT_FORMAT_S32_LE;
+		return 0;
+	}
+	return -1;
+}
+
 static int parse_args(int argc, char **argv, struct options *opts)
 {
 	int i;
@@ -136,6 +167,7 @@ static int parse_args(int argc, char **argv, struct options *opts)
 	opts->update_ms = DEFAULT_UPDATE_MS;
 	opts->rate = 48000;
 	opts->channels = 2;
+	opts->input_format = INPUT_FORMAT_S16_LE;
 	opts->audio_delay_ms = 0;
 	opts->startup_mute_ms = 0;
 	opts->startup_fade_ms = 0;
@@ -155,6 +187,10 @@ static int parse_args(int argc, char **argv, struct options *opts)
 				return -1;
 		} else if (strcmp(argv[i], "--channels") == 0 && i + 1 < argc) {
 			if (parse_int(argv[++i], 1, 8, &opts->channels) < 0)
+				return -1;
+		} else if (strcmp(argv[i], "--input-format") == 0 &&
+			   i + 1 < argc) {
+			if (parse_input_format(argv[++i], &opts->input_format) < 0)
 				return -1;
 		} else if (strcmp(argv[i], "--audio-delay-ms") == 0 &&
 			   i + 1 < argc) {
@@ -248,6 +284,99 @@ static void write_le16s(uint8_t *p, int16_t value)
 
 	p[0] = (uint8_t)(raw & 0xff);
 	p[1] = (uint8_t)(raw >> 8);
+}
+
+static int32_t sign_extend_24(uint32_t value)
+{
+	if (value & 0x00800000U)
+		value |= 0xff000000U;
+	return (int32_t)value;
+}
+
+static size_t input_sample_bytes(int format)
+{
+	switch (format) {
+	case INPUT_FORMAT_S16_LE:
+		return 2;
+	case INPUT_FORMAT_S24_LE:
+	case INPUT_FORMAT_S32_LE:
+		return 4;
+	default:
+		return 2;
+	}
+}
+
+static int16_t read_input_sample_s16(int format, const uint8_t *p)
+{
+	switch (format) {
+	case INPUT_FORMAT_S16_LE:
+		return read_le16s(p);
+	case INPUT_FORMAT_S24_LE: {
+		uint32_t raw = (uint32_t)p[0] |
+			       ((uint32_t)p[1] << 8) |
+			       ((uint32_t)p[2] << 16);
+		return (int16_t)(sign_extend_24(raw) >> 8);
+	}
+	case INPUT_FORMAT_S32_LE: {
+		uint32_t raw = (uint32_t)p[0] |
+			       ((uint32_t)p[1] << 8) |
+			       ((uint32_t)p[2] << 16) |
+			       ((uint32_t)p[3] << 24);
+		return (int16_t)((int32_t)raw >> 16);
+	}
+	default:
+		return read_le16s(p);
+	}
+}
+
+static size_t convert_input_to_s16(const struct options *opts,
+				   struct input_pcm *input, const uint8_t *in,
+				   size_t in_len, uint8_t *out,
+				   size_t out_cap)
+{
+	size_t sample_bytes = input_sample_bytes(opts->input_format);
+	size_t in_pos = 0;
+	size_t out_len = 0;
+
+	if (sample_bytes == 2 && input->carry_len == 0) {
+		size_t even_len = in_len - (in_len % 2);
+
+		if (even_len > out_cap)
+			even_len = out_cap - (out_cap % 2);
+		memcpy(out, in, even_len);
+		out_len = even_len;
+		if (even_len < in_len) {
+			input->carry[0] = in[even_len];
+			input->carry_len = 1;
+		}
+		return out_len;
+	}
+
+	if (input->carry_len) {
+		while (input->carry_len < sample_bytes && in_pos < in_len)
+			input->carry[input->carry_len++] = in[in_pos++];
+		if (input->carry_len == sample_bytes && out_len + 2 <= out_cap) {
+			write_le16s(&out[out_len], read_input_sample_s16(
+						    opts->input_format,
+						    input->carry));
+			out_len += 2;
+			input->carry_len = 0;
+		}
+	}
+
+	while (in_pos + sample_bytes <= in_len && out_len + 2 <= out_cap) {
+		write_le16s(&out[out_len],
+			    read_input_sample_s16(opts->input_format,
+						  &in[in_pos]));
+		out_len += 2;
+		in_pos += sample_bytes;
+	}
+
+	input->carry_len = 0;
+	while (in_pos < in_len && input->carry_len < sizeof(input->carry))
+		input->carry[input->carry_len++] = in[in_pos++];
+
+	return out_len;
 }
 
 static int level_from_mean(unsigned long mean, unsigned int scale)
@@ -680,7 +809,9 @@ int main(int argc, char **argv)
 	struct meter_state state = { 0 };
 	struct chime_state chime;
 	struct pcm_delay delay;
-	uint8_t buf[READ_BUF_SIZE];
+	struct input_pcm input = { 0 };
+	uint8_t inbuf[READ_BUF_SIZE];
+	uint8_t buf[READ_BUF_SIZE + 8];
 	int parse;
 	int ret = 0;
 	unsigned long long output_sample_pos = 0;
@@ -705,7 +836,8 @@ int main(int argc, char **argv)
 	write_levels(opts.level_file, &state, true, opts.audio_delay_ms);
 
 	while (keep_running) {
-		ssize_t got = read(STDIN_FILENO, buf, sizeof(buf));
+		ssize_t got = read(STDIN_FILENO, inbuf, sizeof(inbuf));
+		size_t pcm_len;
 		long long now;
 		bool publish = false;
 
@@ -718,16 +850,20 @@ int main(int argc, char **argv)
 		if (got == 0)
 			break;
 
-		meter_pcm(&state, buf, (size_t)got);
-		apply_startup_gate(&opts, buf, (size_t)got,
-				   &output_sample_pos);
-		apply_chime(&chime, &opts, buf, (size_t)got);
-		apply_pcm_delay(&delay, buf, (size_t)got);
+		pcm_len = convert_input_to_s16(&opts, &input, inbuf, (size_t)got,
+					       buf, sizeof(buf));
+		if (pcm_len == 0)
+			continue;
+
+		meter_pcm(&state, buf, pcm_len);
+		apply_startup_gate(&opts, buf, pcm_len, &output_sample_pos);
+		apply_chime(&chime, &opts, buf, pcm_len);
+		apply_pcm_delay(&delay, buf, pcm_len);
 		now = monotonic_ms();
 		if (now - state.last_write_ms >= opts.update_ms)
 			publish = true;
 
-		if (write_all(STDOUT_FILENO, buf, (size_t)got) < 0) {
+		if (write_all(STDOUT_FILENO, buf, pcm_len) < 0) {
 			ret = 1;
 			break;
 		}

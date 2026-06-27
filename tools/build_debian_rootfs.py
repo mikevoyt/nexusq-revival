@@ -1378,6 +1378,7 @@ done
 : "${NQ_BLUETOOTH_A2DP_ENABLE:=0}"
 : "${NQ_BLUETOOTH_A2DP_RESTART:=0}"
 : "${NQ_BLUETOOTH_A2DP_PROFILE:=a2dp-sink}"
+: "${NQ_BLUETOOTH_A2DP_CODECS=aptX-HD aptX Opus}"
 : "${NQ_BLUETOOTH_A2DP_PCM:=nexusq48}"
 : "${NQ_BLUETOOTH_A2DP_ADDR:=00:00:00:00:00:00}"
 : "${NQ_BLUETOOTH_A2DP_VOLUME:=software}"
@@ -1388,6 +1389,8 @@ done
 : "${NQ_BLUETOOTH_A2DP_LEVELS:=/run/nexusq-audio-levels}"
 : "${NQ_BLUETOOTH_A2DP_LEVEL_UPDATE_MS:=16}"
 : "${NQ_BLUETOOTH_A2DP_TAP_AUDIO_DELAY_MS:=0}"
+: "${NQ_BLUETOOTH_A2DP_INPUT_FORMAT:=}"
+: "${NQ_BLUETOOTH_A2DP_TAP_POLL_INTERVAL:=0.1}"
 : "${NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME:=20000}"
 : "${NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME:=80000}"
 : "${NQ_BLUETOOTH_A2DP_MONITOR:=1}"
@@ -1487,6 +1490,11 @@ pcm_channels() {
         awk '/^Channels:/ { print $2; exit }'
 }
 
+pcm_format() {
+    bluealsa-cli info "$1" 2>/dev/null |
+        awk '/^Format:/ { print $2; exit }'
+}
+
 sanitize_number() {
     value="$1"
     fallback="$2"
@@ -1514,13 +1522,27 @@ start_tap_player() {
                     nq-audio-owner release bluetooth 2>/dev/null || true
                     active=0
                 fi
-                sleep "$NQ_BLUETOOTH_A2DP_MONITOR_INTERVAL"
+                sleep "$NQ_BLUETOOTH_A2DP_TAP_POLL_INTERVAL"
                 continue
             fi
 
             rate="$(sanitize_number "$(pcm_sampling "$pcm")" 44100)"
             channels="$(sanitize_number "$(pcm_channels "$pcm")" 2)"
-            echo "[nq-bluetooth-audio] A2DP PCM present; claiming audio pcm=$pcm rate=$rate channels=$channels"
+            reported_format="$(pcm_format "$pcm")"
+            format="${NQ_BLUETOOTH_A2DP_INPUT_FORMAT:-$reported_format}"
+            case "$format" in
+                S16_LE|S24_LE|S32_LE) ;;
+                "")
+                    format=S16_LE
+                    ;;
+                *)
+                    echo "[nq-bluetooth-audio] unsupported PCM format=$format; waiting"
+                    sleep 1
+                    continue
+                    ;;
+            esac
+
+            echo "[nq-bluetooth-audio] A2DP PCM present; claiming audio pcm=$pcm format=$format reported_format=${reported_format:-unknown} rate=$rate channels=$channels"
             stop_local_sources
             nq-audio-owner claim bluetooth streaming 2>/dev/null || true
             active=1
@@ -1531,6 +1553,7 @@ start_tap_player() {
                 --update-ms "$NQ_BLUETOOTH_A2DP_LEVEL_UPDATE_MS" \\
                 --rate "$rate" \\
                 --channels "$channels" \\
+                --input-format "$format" \\
                 --audio-delay-ms "$NQ_BLUETOOTH_A2DP_TAP_AUDIO_DELAY_MS" |
             aplay \\
                 -q \\
@@ -1608,6 +1631,9 @@ if [ -s "$BLUEALSA_PID" ] && pid_live "$(cat "$BLUEALSA_PID" 2>/dev/null || true
     echo "[nq-bluetooth-audio] bluealsa already running pid=$(cat "$BLUEALSA_PID")"
 else
     set -- bluealsa -p "$NQ_BLUETOOTH_A2DP_PROFILE"
+    for codec in $NQ_BLUETOOTH_A2DP_CODECS; do
+        [ -z "$codec" ] || set -- "$@" --codec="$codec"
+    done
     [ -z "${NQ_BLUETOOTH_BLUEALSA_ARGS:-}" ] || set -- "$@" $NQ_BLUETOOTH_BLUEALSA_ARGS
     echo "[nq-bluetooth-audio] exec: $*"
     if command -v setsid >/dev/null 2>&1; then
