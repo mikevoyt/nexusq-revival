@@ -108,10 +108,30 @@ Default mixer bounds use the currently tested loud passive-speaker profile:
 - `NQ_KNOB_MIN=120`
 - `NQ_KNOB_MAX=231`
 - `NQ_KNOB_STEP=2`
+- `NQ_KNOB_MUTE_ACTION=auto`
+- `NQ_KNOB_BLUETOOTH_PLAYER=/usr/sbin/nq-bluetooth-player`
+- `NQ_KNOB_AUDIO_OWNER_FILE=/run/nexusq-audio-owner`
+- `NQ_KNOB_MUTE_COOLDOWN_MS=8000`
 
 `207` is roughly 0 dB. The release default of `231` is about +12 dB and was
 validated with an external passive speaker. If playback clips or the speaker
 sounds strained, lower `NQ_KNOB_MAX` to `207`.
+
+The center touch event is still `KEY_MUTE`, but userspace policy is now
+configurable:
+
+- `NQ_KNOB_MUTE_ACTION=auto`: when `nq-audio-owner` reports Bluetooth as the
+  active owner, launch `nq-bluetooth-player toggle`; otherwise fall back to the
+  TAS5713 `Speaker Switch`.
+- `NQ_KNOB_MUTE_ACTION=bluetooth-toggle`: only send AVRCP play/pause.
+- `NQ_KNOB_MUTE_ACTION=mixer`: only toggle the TAS5713 speaker switch.
+- `NQ_KNOB_MUTE_ACTION=none`: ignore the center touch.
+
+The default `auto` behavior lets Bluetooth playback take priority: when a phone
+is connected over A2DP/AVRCP, tapping the top center toggles phone playback
+instead of muting the amplifier. Local SomaFM playback keeps the old speaker
+mute fallback. `NQ_KNOB_MUTE_COOLDOWN_MS` filters repeat center-touch events so
+one tap does not produce multiple play/pause toggles.
 
 ## Live Validation
 
