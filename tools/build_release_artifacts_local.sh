@@ -6,7 +6,7 @@ OUT="$ROOT/build/linux-6.6-omap2plus-steelhead-nosmp-audio-wifi-public-debian"
 ROOTFS_DIR="$ROOT/build/debian-trixie-armhf/rootfs"
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-768}"
 MKE2FS="${MKE2FS:-/opt/homebrew/opt/e2fsprogs/sbin/mke2fs}"
-RELEASE_VERSION="${RELEASE_VERSION:-v0.4.0}"
+RELEASE_VERSION="${RELEASE_VERSION:-v0.5.0}"
 
 # On Apple Silicon, older /usr/local GNU binutils can be x86_64-only. Keep the
 # system ar ahead of those while still preferring Homebrew OpenSSL 3 for
