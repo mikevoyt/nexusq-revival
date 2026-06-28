@@ -36,10 +36,14 @@ targets available for experiments:
 - Opt-in Squeezelite endpoint support remains available for legacy Music
   Assistant playback.
 - Bluetooth A2DP sink support is opt-in and validated with BlueALSA playback,
-  Android pairing, local-audio priority takeover, live visualizer levels, and
-  higher-quality codec support including aptX-HD on the tested Pixel path.
+  Android pairing, local-audio priority takeover, live visualizer levels, a
+  stable 500 ms playback tap buffer, and higher-quality codec support including
+  aptX-HD on the tested Pixel path.
 - The Nexus Q top ring controls TAS5713 hardware volume through the front-panel
   AVR input driver and `nq-knob-volume`.
+- The top-center touch target toggles Bluetooth play/pause through AVRCP while
+  Bluetooth owns the audio path, with a local mute fallback outside Bluetooth
+  playback.
 - The LED ring is controllable through `/dev/leds`; the default visualizer runs
   at 60 fps, follows standalone SomaFM playback through the PCM level tap, and
   renders adaptive bass/mid/high color pulses with slowly rotating animation
@@ -58,9 +62,9 @@ Still experimental:
 - The standalone jukebox is functional on real hardware, but long-duration
   unattended appliance soak testing is still pending.
 - Full systemd service bring-up is not the default init path.
-- HDMI, S/PDIF, cap-touch handling, AVRCP media controls, Chromecast receiver
-  behavior, USB-host storage playback, and richer visualizer algorithms such as
-  FFT-based analysis are not finished.
+- HDMI, S/PDIF, richer cap-touch gestures, full AVRCP media controls,
+  Chromecast receiver behavior, USB-host storage playback, and richer
+  visualizer algorithms such as FFT-based analysis are not finished.
 - The LED visualizer is a local amplitude/coarse-band effect, not a full FFT or
   Music Assistant UI-integrated visualizer yet.
 - TAS5713 speaker validation has focused on one wired speaker so far; full
@@ -96,7 +100,8 @@ The v0.5.0 release assets are:
 - `nexusq-debian-trixie-armhf-rootfs.sparse.img`
   - Android sparse image for `fastboot flash userdata`
   - Debian 13.5 armhf rootfs with SomaFM/NFC jukebox, LED visualizer, knob
-    volume daemon, BlueALSA A2DP support, Dropbear SSH, and trusted-local ADB
+    volume daemon, BlueALSA A2DP support, basic AVRCP play/pause helper,
+    Dropbear SSH, and trusted-local ADB
 - `SHA256SUMS-v0.5.0.txt`
 
 Download them from:

@@ -18,11 +18,15 @@ standalone music appliance, not just a bring-up platform.
   and Bluetooth audio.
 - Drives the top power LED as a playback-active rainbow status indicator.
 - Uses the physical top ring as a TAS5713 hardware volume control.
+- Uses the top-center touch target as Bluetooth AVRCP play/pause while
+  Bluetooth owns the audio path.
 - Provides trusted-local-network ADB and Dropbear SSH iteration paths.
 - Plays Bluetooth A2DP audio from Android through BlueALSA, the Nexus Q 48 kHz
   ALSA route, and the live visualizer path.
 - Supports higher-quality Bluetooth codecs when the phone negotiates them,
   including aptX-HD on the tested Pixel path.
+- Keeps the tested Bluetooth path stable with a 500 ms PCM tap playback buffer
+  after reconnects.
 
 ## Platform Additions Since v0.4.0
 
@@ -36,6 +40,8 @@ standalone music appliance, not just a bring-up platform.
   occasional swirl accents.
 - Adds the front-panel AVR input path and `nq-knob-volume` daemon for physical
   volume control.
+- Adds the `nq-bluetooth-player` helper and top-center touch debounce for basic
+  Bluetooth AVRCP play/pause.
 - Adds the BlueZ/BlueALSA A2DP sink path with audio-priority ownership over
   local SomaFM playback.
 - Keeps Squeezelite/Music Assistant support available as an opt-in legacy
@@ -72,18 +78,19 @@ For temporary kernel testing without changing the installed boot partition, use
   - Android sparse image for `fastboot flash userdata`
   - Debian 13.5 armhf rootfs with Dropbear SSH, trusted-local ADB, SomaFM/NFC
     jukebox helpers, BlueALSA Bluetooth A2DP support, LED visualizer utilities,
-    knob-volume daemon, time sync, and common network/debugging tools
+    knob-volume daemon, basic AVRCP play/pause helper, time sync, and common
+    network/debugging tools
 - `SHA256SUMS-v0.5.0.txt`
 
 ## Known Gaps
 
-- Bluetooth playback is validated as an A2DP sink, but AVRCP phone media
-  controls are not finished yet.
+- Bluetooth playback is validated as an A2DP sink with basic AVRCP play/pause;
+  richer phone media controls are not finished yet.
 - Chromecast receiver behavior is not implemented.
 - External USB storage support is planned but still waiting on host-mode/OTG
   validation.
 - Full systemd appliance boot is staged but not the default init path.
-- HDMI, S/PDIF, cap-touch behavior, and FFT-grade visualizer analysis are not
-  finished.
+- HDMI, S/PDIF, richer cap-touch behavior, and FFT-grade visualizer analysis are
+  not finished.
 - Wi-Fi depends on stock `system` calibration or a user-provided NVRAM text
   file.

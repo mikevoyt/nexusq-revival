@@ -20,7 +20,7 @@
     <div class="hero__content">
       <p class="eyebrow">Google Nexus Q / Steelhead</p>
       <h1>Nexus Q Revival</h1>
-      <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, TAS5713 speaker playback, NFC station cards, live LEDs, and Bluetooth A2DP.</p>
+      <p class="lede">A modern Debian 13 and Linux 6.6 bring-up for the abandoned spherical streaming device, validated on real hardware with Wi-Fi, SSH, TAS5713 speaker playback, NFC station cards, live LEDs, and Bluetooth A2DP plus basic AVRCP.</p>
       <div class="hero__actions">
         <a class="button button--primary" href="https://github.com/mikevoyt/nexusq-revival/releases/tag/v0.5.0">Download v0.5.0</a>
         <a class="button" href="https://github.com/mikevoyt/nexusq-revival/blob/main/FLASHING.md">Flash Guide</a>
@@ -74,8 +74,8 @@
           </article>
           <article class="status-card">
             <span>Bluetooth</span>
-            <strong>A2DP Sink</strong>
-            <p>Android media audio can stream through BlueALSA into the Q playback path.</p>
+            <strong>A2DP + AVRCP</strong>
+            <p>Android media audio streams through BlueALSA, with top-touch play/pause.</p>
           </article>
         </div>
       </div>
@@ -94,7 +94,7 @@
           <li>Moved public Wi-Fi from embedded private blobs to modular `brcmfmac` plus first-boot calibration extraction.</li>
           <li>Added a standalone SomaFM jukebox that maps NFC tag UIDs to station ids and starts local stream playback.</li>
           <li>Built a live LED visualizer for SomaFM and Bluetooth playback, including loading cues and top-LED playback status.</li>
-          <li>Validated an opt-in Bluetooth A2DP sink path with BlueALSA, visualizer levels, and audio-priority takeover.</li>
+          <li>Validated an opt-in Bluetooth A2DP sink path with BlueALSA, aptX-HD, visualizer levels, audio-priority takeover, and top-touch AVRCP play/pause.</li>
           <li>Kept opt-in Squeezelite endpoint support available for legacy Music Assistant experiments.</li>
           <li>Connected the original top ring to TAS5713 hardware volume through the front-panel AVR input driver.</li>
           <li>Added an opt-in ADB-compatible debug bridge with root Bash shell and file sync for trusted bring-up networks.</li>
@@ -108,7 +108,7 @@
         <div>
           <p class="section-kicker">Release</p>
           <h2>v0.5.0</h2>
-          <p class="prose">Flash Debian to <code>userdata</code>, install the Linux 6.6 image to <code>boot</code>, and reboot into a standalone SomaFM/NFC Nexus Q player with live LEDs, local volume, SSH/ADB, and opt-in Bluetooth A2DP.</p>
+          <p class="prose">Flash Debian to <code>userdata</code>, install the Linux 6.6 image to <code>boot</code>, and reboot into a standalone SomaFM/NFC Nexus Q player with live LEDs, local volume, SSH/ADB, and opt-in Bluetooth A2DP plus basic AVRCP.</p>
         </div>
         <div class="commands" aria-label="Fastboot commands">
           <code>fastboot flash boot nexusq-linux66-omap2plus-nosmp-audio-wifi-public-debian.img</code>
