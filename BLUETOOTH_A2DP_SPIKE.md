@@ -18,6 +18,10 @@ This spike builds on `BLUETOOTH_HCI_SPIKE.md`. The controller already reaches
   the Nexus Q ALSA profile.
 - Route playback through `nexusq48` by default so common 44.1 kHz phone streams
   are converted to the TAS5713 path's 48 kHz hardware rate.
+- Prefer aptX-HD automatically when BlueALSA exposes a connected A2DP source
+  PCM and the phone supports that codec.
+- Set the BlueALSA PCM volume to full scale on reconnect, avoiding quiet
+  sessions when the transport volume comes up low.
 - Claim `nq-audio-owner bluetooth streaming` while a BlueALSA A2DP source PCM is
   active, and release the claim when it disappears.
 - Stop local SomaFM/Squeezelite playback when Bluetooth claims audio priority.
@@ -36,8 +40,10 @@ NQ_BLUETOOTH_AGENT_ENABLE=1
 NQ_BLUETOOTH_A2DP_ENABLE=1
 NQ_BLUETOOTH_A2DP_RESTART=1
 NQ_BLUETOOTH_A2DP_CODECS='aptX-HD aptX Opus'
+NQ_BLUETOOTH_A2DP_PREFERRED_CODEC=aptX-HD
 NQ_BLUETOOTH_A2DP_PCM=nexusq48
 NQ_BLUETOOTH_A2DP_VOLUME=software
+NQ_BLUETOOTH_A2DP_PCM_VOLUME=127
 EOF
 
 /sbin/nq-start-bluetooth
@@ -55,7 +61,9 @@ The expected process state is:
 From the phone, pair with `Nexus Q`, connect it for media audio, and start
 playback. Once the phone is streaming, `bluealsa-cli list-pcms` should show an
 A2DP source PCM, `bluealsa-cli info ...` should show the selected codec, and
-`nq-audio-owner status` should report `bluetooth streaming`.
+`nq-audio-owner status` should report `bluetooth streaming`. If the phone
+initially selects SBC but supports aptX-HD, the tap worker now asks BlueALSA to
+switch that live PCM to aptX-HD before opening the stream.
 
 Useful logs:
 
@@ -69,6 +77,7 @@ nq-audio-owner status
 bluealsa-cli list-pcms
 bluealsa-cli info /org/bluealsa/hci0/dev_XX_XX_XX_XX_XX_XX/a2dpsnk/source
 bluealsa-cli codec /org/bluealsa/hci0/dev_XX_XX_XX_XX_XX_XX/a2dpsnk/source aptX-HD
+bluealsa-cli volume /org/bluealsa/hci0/dev_XX_XX_XX_XX_XX_XX/a2dpsnk/source 127 127
 ```
 
 ## Current Codec Result
@@ -94,9 +103,18 @@ playback window. The tap worker now polls for a newly exposed A2DP PCM every
 100 ms while idle, reducing the startup window where BlueALSA can decode before
 the PCM reader is attached.
 
+A later live tap/play-pause stress test exposed a separate steady-playback
+failure: the original 80 ms `aplay` buffer was too small after A2DP transport
+restarts, causing audible stutter, ALSA underruns, and a BlueALSA
+`PCM overrun` storm. The default tap path now uses
+`NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME=500000` and
+`NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME=100000`. With aptX-HD selected and
+the larger buffer, a 25-second live playback window logged zero BlueALSA
+overruns, zero ALSA underruns, and zero missing RTP warnings.
+
 For byte-alignment experiments, set `NQ_BLUETOOTH_A2DP_INPUT_FORMAT=S32_LE` in
 the runtime env to force the tap to treat 24-in-32 PCM as high-aligned.
 
-Android may still reconnect on SBC. If `bluealsa-cli info ...` reports
-`Selected codec: SBC`, either select aptX-HD from Android developer Bluetooth
-codec settings or switch the live PCM with `bluealsa-cli codec ... aptX-HD`.
+Android may still reconnect on SBC if the phone does not accept a live codec
+switch or aptX-HD is disabled in developer Bluetooth codec settings. In that
+case the Q continues with the phone-selected codec rather than dropping audio.

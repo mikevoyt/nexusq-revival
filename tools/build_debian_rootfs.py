@@ -1379,9 +1379,13 @@ done
 : "${NQ_BLUETOOTH_A2DP_RESTART:=0}"
 : "${NQ_BLUETOOTH_A2DP_PROFILE:=a2dp-sink}"
 : "${NQ_BLUETOOTH_A2DP_CODECS=aptX-HD aptX Opus}"
+: "${NQ_BLUETOOTH_A2DP_PREFERRED_CODEC:=aptX-HD}"
+: "${NQ_BLUETOOTH_A2DP_CODEC_SWITCH_WAIT:=1}"
 : "${NQ_BLUETOOTH_A2DP_PCM:=nexusq48}"
 : "${NQ_BLUETOOTH_A2DP_ADDR:=00:00:00:00:00:00}"
 : "${NQ_BLUETOOTH_A2DP_VOLUME:=software}"
+: "${NQ_BLUETOOTH_A2DP_SET_PCM_VOLUME:=1}"
+: "${NQ_BLUETOOTH_A2DP_PCM_VOLUME:=127}"
 : "${NQ_BLUETOOTH_A2DP_SINGLE_AUDIO:=1}"
 : "${NQ_BLUETOOTH_A2DP_PERIOD_TIME:=100000}"
 : "${NQ_BLUETOOTH_A2DP_BUFFER_TIME:=500000}"
@@ -1391,8 +1395,8 @@ done
 : "${NQ_BLUETOOTH_A2DP_TAP_AUDIO_DELAY_MS:=0}"
 : "${NQ_BLUETOOTH_A2DP_INPUT_FORMAT:=}"
 : "${NQ_BLUETOOTH_A2DP_TAP_POLL_INTERVAL:=0.1}"
-: "${NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME:=20000}"
-: "${NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME:=80000}"
+: "${NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME:=100000}"
+: "${NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME:=500000}"
 : "${NQ_BLUETOOTH_A2DP_MONITOR:=1}"
 : "${NQ_BLUETOOTH_A2DP_MONITOR_INTERVAL:=2}"
 : "${NQ_BLUETOOTH_A2DP_STOP_LOCAL_ON_CLAIM:=1}"
@@ -1495,6 +1499,11 @@ pcm_format() {
         awk '/^Format:/ { print $2; exit }'
 }
 
+pcm_codec() {
+    bluealsa-cli info "$1" 2>/dev/null |
+        awk '/^Selected codec:/ { print $3; exit }'
+}
+
 sanitize_number() {
     value="$1"
     fallback="$2"
@@ -1502,6 +1511,33 @@ sanitize_number() {
         ""|*[!0-9]*) printf '%s\\n' "$fallback" ;;
         *) printf '%s\\n' "$value" ;;
     esac
+}
+
+select_preferred_codec() {
+    pcm="$1"
+    [ -n "$NQ_BLUETOOTH_A2DP_PREFERRED_CODEC" ] || return 0
+
+    current_codec="$(pcm_codec "$pcm")"
+    if [ "$current_codec" = "$NQ_BLUETOOTH_A2DP_PREFERRED_CODEC" ]; then
+        return 0
+    fi
+
+    echo "[nq-bluetooth-audio] selecting preferred codec: pcm=$pcm current=${current_codec:-unknown} preferred=$NQ_BLUETOOTH_A2DP_PREFERRED_CODEC"
+    if bluealsa-cli codec "$pcm" "$NQ_BLUETOOTH_A2DP_PREFERRED_CODEC"; then
+        sleep "$NQ_BLUETOOTH_A2DP_CODEC_SWITCH_WAIT"
+        return 0
+    fi
+
+    echo "[nq-bluetooth-audio] preferred codec unavailable; continuing with ${current_codec:-phone-selected codec}"
+    return 0
+}
+
+set_pcm_volume() {
+    pcm="$1"
+    [ "$NQ_BLUETOOTH_A2DP_SET_PCM_VOLUME" = "1" ] || return 0
+    volume="$(sanitize_number "$NQ_BLUETOOTH_A2DP_PCM_VOLUME" 127)"
+    echo "[nq-bluetooth-audio] setting bluetooth PCM volume: pcm=$pcm left=$volume right=$volume"
+    bluealsa-cli volume "$pcm" "$volume" "$volume" || true
 }
 
 start_tap_player() {
@@ -1526,6 +1562,14 @@ start_tap_player() {
                 continue
             fi
 
+            select_preferred_codec "$pcm"
+            pcm="$(find_a2dp_source_pcm | head -n 1)"
+            if [ -z "$pcm" ]; then
+                echo "[nq-bluetooth-audio] A2DP PCM disappeared during codec selection"
+                sleep "$NQ_BLUETOOTH_A2DP_TAP_POLL_INTERVAL"
+                continue
+            fi
+
             rate="$(sanitize_number "$(pcm_sampling "$pcm")" 44100)"
             channels="$(sanitize_number "$(pcm_channels "$pcm")" 2)"
             reported_format="$(pcm_format "$pcm")"
@@ -1546,6 +1590,7 @@ start_tap_player() {
             stop_local_sources
             nq-audio-owner claim bluetooth streaming 2>/dev/null || true
             active=1
+            set_pcm_volume "$pcm"
 
             bluealsa-cli open "$pcm" |
             nq-pcm-level-tap \\

@@ -175,10 +175,12 @@ Assistant playback so Squeezelite can release the ALSA device.
 See [MUSIC_ASSISTANT.md](MUSIC_ASSISTANT.md) for the porting rationale and
 Music Assistant setup notes.
 
-## Bluetooth Controller Spike
+## Bluetooth A2DP Sink
 
-Bluetooth bring-up is opt-in while the A2DP sink is being validated. A test
-image can persist the controller and A2DP enable flags with:
+Bluetooth bring-up is still enabled by config, but the validated path is now a
+usable A2DP sink: pair a phone with `Nexus Q`, stream media audio, and the Q
+claims playback priority over SomaFM while Bluetooth is active. Persist the
+controller and A2DP enable flags with:
 
 ```sh
 cat >/run/nexusq/bluetooth.env <<'EOF'
@@ -188,16 +190,22 @@ NQ_BLUETOOTH_PAIRABLE=1
 NQ_BLUETOOTH_DISCOVERABLE=1
 NQ_BLUETOOTH_AGENT_ENABLE=1
 NQ_BLUETOOTH_A2DP_ENABLE=1
-NQ_BLUETOOTH_A2DP_PCM=plughw:0,0
+NQ_BLUETOOTH_A2DP_CODECS='aptX-HD aptX Opus'
+NQ_BLUETOOTH_A2DP_PREFERRED_CODEC=aptX-HD
+NQ_BLUETOOTH_A2DP_PCM=nexusq48
+NQ_BLUETOOTH_A2DP_PCM_VOLUME=127
+NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME=500000
+NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME=100000
 EOF
 
 /sbin/nq-provision --bluetooth /run/nexusq/bluetooth.env --start-bluetooth --status
 ```
 
-When the A2DP monitor sees a Bluetooth PCM, it claims
-`nq-audio-owner bluetooth` so SomaFM NFC taps and the default boot station yield
-instead of stealing playback. Live Bluetooth visualizer levels are still the
-next follow-up after phone playback is validated.
+When the A2DP tap sees a Bluetooth PCM, it claims `nq-audio-owner bluetooth` so
+SomaFM NFC taps and the default boot station yield instead of stealing playback.
+The default tap path routes BlueALSA PCM through `nq-pcm-level-tap` and
+`nexusq48`, feeds the live LED visualizer, prefers aptX-HD when the phone
+supports it, and restores BlueALSA PCM volume to full scale on reconnect.
 
 See [BLUETOOTH_HCI_SPIKE.md](BLUETOOTH_HCI_SPIKE.md) for wiring, firmware, and
 diagnostic details. See [BLUETOOTH_A2DP_SPIKE.md](BLUETOOTH_A2DP_SPIKE.md) for
