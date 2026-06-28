@@ -103,6 +103,15 @@ playback window. The tap worker now polls for a newly exposed A2DP PCM every
 100 ms while idle, reducing the startup window where BlueALSA can decode before
 the PCM reader is attached.
 
+A later live tap/play-pause stress test exposed a separate steady-playback
+failure: the original 80 ms `aplay` buffer was too small after A2DP transport
+restarts, causing audible stutter, ALSA underruns, and a BlueALSA
+`PCM overrun` storm. The default tap path now uses
+`NQ_BLUETOOTH_A2DP_TAP_APLAY_BUFFER_TIME=500000` and
+`NQ_BLUETOOTH_A2DP_TAP_APLAY_PERIOD_TIME=100000`. With aptX-HD selected and
+the larger buffer, a 25-second live playback window logged zero BlueALSA
+overruns, zero ALSA underruns, and zero missing RTP warnings.
+
 For byte-alignment experiments, set `NQ_BLUETOOTH_A2DP_INPUT_FORMAT=S32_LE` in
 the runtime env to force the tap to treat 24-in-32 PCM as high-aligned.
 
