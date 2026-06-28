@@ -2571,7 +2571,7 @@ done
 : "${NQ_KNOB_MUTE_ACTION:=auto}"
 : "${NQ_KNOB_BLUETOOTH_PLAYER:=/usr/sbin/nq-bluetooth-player}"
 : "${NQ_KNOB_AUDIO_OWNER_FILE:=/run/nexusq-audio-owner}"
-: "${NQ_KNOB_MUTE_COOLDOWN_MS:=1500}"
+: "${NQ_KNOB_MUTE_COOLDOWN_MS:=8000}"
 : "${NQ_KNOB_INPUT_NAME:=Steelhead Front Panel}"
 
 export NQ_KNOB_MIXER_CARD NQ_KNOB_CONTROL NQ_KNOB_MUTE_CONTROL

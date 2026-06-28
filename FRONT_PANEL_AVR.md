@@ -111,7 +111,7 @@ Default mixer bounds use the currently tested loud passive-speaker profile:
 - `NQ_KNOB_MUTE_ACTION=auto`
 - `NQ_KNOB_BLUETOOTH_PLAYER=/usr/sbin/nq-bluetooth-player`
 - `NQ_KNOB_AUDIO_OWNER_FILE=/run/nexusq-audio-owner`
-- `NQ_KNOB_MUTE_COOLDOWN_MS=1500`
+- `NQ_KNOB_MUTE_COOLDOWN_MS=8000`
 
 `207` is roughly 0 dB. The release default of `231` is about +12 dB and was
 validated with an external passive speaker. If playback clips or the speaker

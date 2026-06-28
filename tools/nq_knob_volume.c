@@ -44,7 +44,7 @@
 #define DEFAULT_MUTE_ACTION "auto"
 #define DEFAULT_BLUETOOTH_PLAYER "/usr/sbin/nq-bluetooth-player"
 #define DEFAULT_AUDIO_OWNER_FILE "/run/nexusq-audio-owner"
-#define DEFAULT_MUTE_COOLDOWN_MS 1500
+#define DEFAULT_MUTE_COOLDOWN_MS 8000
 #define SCAN_SLEEP_SECS 1
 
 static volatile sig_atomic_t keep_running = 1;
@@ -58,6 +58,12 @@ static void handle_signal(int sig)
 static void log_msg(const char *fmt, ...)
 {
 	va_list ap;
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+		fprintf(stderr, "[%lld.%03ld] ",
+			(long long)ts.tv_sec, ts.tv_nsec / 1000000L);
+	}
 
 	va_start(ap, fmt);
 	vfprintf(stderr, fmt, ap);
@@ -528,10 +534,12 @@ int main(int argc, char **argv)
 			now_ms = monotonic_ms();
 			if (now_ms > 0 && last_mute_ms > 0 &&
 			    now_ms - last_mute_ms < mute_cooldown_ms) {
-				log_msg("mute key ignored by cooldown");
+				log_msg("mute key ignored by cooldown elapsed_ms=%lld",
+					now_ms - last_mute_ms);
 				continue;
 			}
 			last_mute_ms = now_ms;
+			log_msg("mute key accepted");
 			handle_mute_key(card, mute_control, mute_action,
 					bluetooth_player, audio_owner_file,
 					&muted);
